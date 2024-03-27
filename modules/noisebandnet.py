@@ -26,6 +26,7 @@ class NoiseBandNet(L.LightningModule):
     - samplerate : int, the sampling rate of the input signal
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
     - learning_rate: float, the learning rate for the optimizer
+    - torch_device: str, the device to run the model on
   """
   def __init__(self,
                m_filters: int = 2048,
@@ -33,7 +34,8 @@ class NoiseBandNet(L.LightningModule):
                hidden_size: int = 128,
                n_control_params: int = 2,
                resampling_factor: int = 32,
-               learning_rate: float = 1e-3):
+               learning_rate: float = 1e-3,
+               torch_device = 'cpu'):
     super().__init__()
 
     self._filterbank = FilterBank(
@@ -42,6 +44,7 @@ class NoiseBandNet(L.LightningModule):
     )
 
     self._resampling_factor = resampling_factor
+    self._torch_device = torch_device
 
     # Define the neural network
     ## Parallel connection of the control parameters to the dedicated MLPs
@@ -101,7 +104,7 @@ class NoiseBandNet(L.LightningModule):
 
     # Compute return the loss
     loss = self.loss(y_audio, x_audio)
-    print(f"Loss: {loss.item()}")
+    self.log("train_loss", loss, prog_bar=True)
     return loss
 
 
@@ -131,7 +134,6 @@ class NoiseBandNet(L.LightningModule):
       - amps: torch.Tensor, the predicted amplitudes of the noise bands
     """
     control_params = [c.permute(0, 2, 1) for c in control_params]
-
     # pass through the control parameter MLPs
     x = [mlp(param) for param, mlp in zip(control_params, self.control_param_mlps)] # out: [control_params_number, batch_size, signal_length, hidden_size]
 
@@ -151,8 +153,6 @@ class NoiseBandNet(L.LightningModule):
 
     # pass through the output layer and custom activation
     amps = self._scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1) # out: [batch_size, n_bands, signal_length]
-
-    print("Amps contain nan?", torch.any(torch.isnan(amps)))
     return amps
 
 
@@ -174,11 +174,7 @@ class NoiseBandNet(L.LightningModule):
     looped_bands = looped_bands.to(upsampled_amplitudes.device, dtype=torch.float32)
 
     # synthesize the signal
-    signal = (upsampled_amplitudes * looped_bands).sum(1, keepdim=True)
-    is_nan = torch.any(torch.isnan(signal))
-    print(f"Did synthesised signal produce NaNs? {is_nan}")
-
-    # signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
+    signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
     return signal
 
 
@@ -191,8 +187,7 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - y: torch.Tensor, the output tensor
     """
-    # return 2*torch.pow(torch.sigmoid(x), np.log(10)) + 1e-18
-    return 2 * torch.sigmoid(x)**(math.log(10)) + 1e-18
+    return 2*torch.pow(torch.sigmoid(x), np.log(10)) + 1e-18
 
 
   @property
@@ -201,15 +196,14 @@ class NoiseBandNet(L.LightningModule):
     return self._filterbank.noisebands
 
 
-  @staticmethod
-  def _construct_loss_function():
+  def _construct_loss_function(self):
     """
     Construct the loss function for the model: a multi-resolution STFT loss
     """
     fft_sizes = np.array([8192, 4096, 2048, 1024, 512, 128, 32])
     return auraloss.freq.MultiResolutionSTFTLoss(fft_sizes=[8192, 4096, 2048, 1024, 512, 128, 32],
-                                                hop_sizes=[8192//4, 4096//4, 2048//4, 1024//4, 512//4, 128//4, 32//4],
-                                                win_lengths=[8192, 4096, 2048, 1024, 512, 128, 32])
+                                                hop_sizes=fft_sizes//4,
+                                                win_lengths=fft_sizes)
 
 
   @staticmethod
