@@ -44,5 +44,5 @@ if __name__ == '__main__':
   nbn = NoiseBandNet(learning_rate=1e-3)
 
   precision = 16 if config.mixed_precision else 32
-  trainer = L.Trainer(max_epochs=10000, accelerator=config.device, precision=precision)
+  trainer = L.Trainer(max_epochs=10000, accelerator=config.device, precision=precision, log_every_n_steps=4)
   trainer.fit(model=nbn, train_dataloaders=train_loader)
