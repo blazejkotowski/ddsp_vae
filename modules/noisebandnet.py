@@ -104,25 +104,12 @@ class NoiseBandNet(L.LightningModule):
 
     # Compute return the loss
     loss = self.loss(y_audio, x_audio)
-    self.log("train_loss", loss, prog_bar=True)
+    self.log("train_loss", loss, prog_bar=True, logger=True)
     return loss
 
 
   def configure_optimizers(self):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
-
-
-  # def on_before_optimizer_step(self, optimizer):
-  #     # Compute the 2-norm for each layer
-  #     # If using mixed precision, the gradients are already unscaled here
-  #     norms = grad_norm(self.control_param_mlps, norm_type=2)
-  #     print(norms)
-  #     norms = grad_norm(self.gru, norm_type=2)
-  #     print(norms)
-  #     norms = grad_norm(self.inter_mlp, norm_type=2)
-  #     print(norms)
-  #     norms = grad_norm(self.output_amps, norm_type=2)
-  #     print(norms)
 
 
   def _predict_amplitudes(self, control_params: torch.Tensor) -> torch.Tensor:
