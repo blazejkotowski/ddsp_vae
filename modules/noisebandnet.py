@@ -158,7 +158,7 @@ class NoiseBandNet(L.LightningModule):
     repeats = upsampled_amplitudes.shape[-1] // self._noisebands.shape[-1] + 1
     looped_bands = self._noisebands.repeat(1, repeats) # repeat
     looped_bands = looped_bands[:, :upsampled_amplitudes.shape[-1]] # trim
-    looped_bands = looped_bands.to(upsampled_amplitudes.device, dtype=torch.float32)
+    looped_bands = looped_bands.to(upsampled_amplitudes.device)
 
     # synthesize the signal
     signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
