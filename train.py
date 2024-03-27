@@ -32,7 +32,7 @@ if __name__ == '__main__':
   n_signal = int(config.audio_chunk_duration * config.fs)
 
   dataset = AudioDataset(
-    dataset_path=DATASET_PATH,
+    dataset_path=config.dataset_path,
     audio_size_samples=n_signal,
     min_batch_size=config.batch_size,
     sampling_rate=config.fs,
