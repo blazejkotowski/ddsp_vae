@@ -37,7 +37,7 @@ if __name__ == '__main__':
     min_batch_size=config.batch_size,
     sampling_rate=config.fs,
     device=config.device
-  )ls
+  )
 
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
