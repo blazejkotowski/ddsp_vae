@@ -15,32 +15,34 @@ N_SIGNAL = int(SAMPLING_RATE * AUDIO_CHUNK_DURATION)
 BATCH_SIZE = 16
 TORCH_DEVICE = 'cpu'
 
-config = argparse.ArgumentParser()
-config.add_argument('--dataset_path', help='Directory of the training sound/sounds')
-config.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu'])
-config.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
-config.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-config.add_argument('--n_band', type=int, default=2048, help='Number of bands of the filter bank')
-config.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
-config.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
-config.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
-config.add_argument('--output_path', help='Directory to save the model')
-config.parse_args()
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--dataset_path', help='Directory of the training sound/sounds')
+  parser.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu'])
+  parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+  parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+  parser.add_argument('--n_band', type=int, default=2048, help='Number of bands of the filter bank')
+  parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
+  parser.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
+  parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
+  parser.add_argument('--output_path', help='Directory to save the model')
+  parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
+  config = parser.parse_args()
 
-n_signal = config.audio_chunk_duration * config.fs
+  n_signal = int(config.audio_chunk_duration * config.fs)
 
+  dataset = AudioDataset(
+    dataset_path=DATASET_PATH,
+    audio_size_samples=n_signal,
+    min_batch_size=config.batch_size,
+    sampling_rate=config.fs,
+    device=config.device
+  )
 
-dataset = AudioDataset(
-  dataset_path=DATASET_PATH,
-  audio_size_samples=N_SIGNAL,
-  min_batch_size=BATCH_SIZE,
-  sampling_rate=SAMPLING_RATE,
-  device=TORCH_DEVICE
-)
+  train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
-train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+  nbn = NoiseBandNet(learning_rate=1e-3)
 
-nbn = NoiseBandNet(learning_rate=1e-3)
-
-trainer = L.Trainer(limit_train_batches=100, max_epochs=100, gradient_clip_val=0.5, precision=32, accelerator=TORCH_DEVICE)
-trainer.fit(model=nbn, train_dataloaders=train_loader)
+  precision = 16 if config.mixed_precision else 32
+  trainer = L.Trainer(max_epochs=10000, accelerator=config.device, precision=precision)
+  trainer.fit(model=nbn, train_dataloaders=train_loader)
