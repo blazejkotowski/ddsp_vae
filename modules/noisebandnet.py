@@ -1,11 +1,16 @@
 import lightning as L
+from lightning.pytorch.utilities import grad_norm
+
 import torch
 from torch import nn
 import torch.nn.functional as F
+
 import numpy as np
 import auraloss
 
 from modules.filterbank import FilterBank
+
+import math
 
 from typing import List
 
@@ -94,12 +99,27 @@ class NoiseBandNet(L.LightningModule):
     # Predict the audio
     y_audio = self.forward(control_params)
 
-    # Compute and return the loss
-    return self.loss(y_audio, x_audio)
+    # Compute return the loss
+    loss = self.loss(y_audio, x_audio)
+    print(f"Loss: {loss.item()}")
+    return loss
 
 
   def configure_optimizers(self):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+
+
+  # def on_before_optimizer_step(self, optimizer):
+  #     # Compute the 2-norm for each layer
+  #     # If using mixed precision, the gradients are already unscaled here
+  #     norms = grad_norm(self.control_param_mlps, norm_type=2)
+  #     print(norms)
+  #     norms = grad_norm(self.gru, norm_type=2)
+  #     print(norms)
+  #     norms = grad_norm(self.inter_mlp, norm_type=2)
+  #     print(norms)
+  #     norms = grad_norm(self.output_amps, norm_type=2)
+  #     print(norms)
 
 
   def _predict_amplitudes(self, control_params: torch.Tensor) -> torch.Tensor:
@@ -110,6 +130,8 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - amps: torch.Tensor, the predicted amplitudes of the noise bands
     """
+    control_params = [c.permute(0, 2, 1) for c in control_params]
+
     # pass through the control parameter MLPs
     x = [mlp(param) for param, mlp in zip(control_params, self.control_param_mlps)] # out: [control_params_number, batch_size, signal_length, hidden_size]
 
@@ -129,6 +151,8 @@ class NoiseBandNet(L.LightningModule):
 
     # pass through the output layer and custom activation
     amps = self._scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1) # out: [batch_size, n_bands, signal_length]
+
+    print("Amps contain nan?", torch.any(torch.isnan(amps)))
     return amps
 
 
@@ -147,9 +171,14 @@ class NoiseBandNet(L.LightningModule):
     repeats = upsampled_amplitudes.shape[-1] // self._noisebands.shape[-1] + 1
     looped_bands = self._noisebands.repeat(1, repeats) # repeat
     looped_bands = looped_bands[:, :upsampled_amplitudes.shape[-1]] # trim
+    looped_bands = looped_bands.to(upsampled_amplitudes.device, dtype=torch.float32)
 
     # synthesize the signal
-    signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
+    signal = (upsampled_amplitudes * looped_bands).sum(1, keepdim=True)
+    is_nan = torch.any(torch.isnan(signal))
+    print(f"Did synthesised signal produce NaNs? {is_nan}")
+
+    # signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
     return signal
 
 
@@ -162,7 +191,8 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - y: torch.Tensor, the output tensor
     """
-    return 2*torch.pow(torch.sigmoid(x), np.log(10)) + 1e-18
+    # return 2*torch.pow(torch.sigmoid(x), np.log(10)) + 1e-18
+    return 2 * torch.sigmoid(x)**(math.log(10)) + 1e-18
 
 
   @property
@@ -177,7 +207,9 @@ class NoiseBandNet(L.LightningModule):
     Construct the loss function for the model: a multi-resolution STFT loss
     """
     fft_sizes = np.array([8192, 4096, 2048, 1024, 512, 128, 32])
-    return auraloss.MultiResolutionSTFTLoss(fft_sizes=fft_sizes, hop_length=512, win_length=2048)
+    return auraloss.freq.MultiResolutionSTFTLoss(fft_sizes=[8192, 4096, 2048, 1024, 512, 128, 32],
+                                                hop_sizes=[8192//4, 4096//4, 2048//4, 1024//4, 512//4, 128//4, 32//4],
+                                                win_lengths=[8192, 4096, 2048, 1024, 512, 128, 32])
 
 
   @staticmethod
