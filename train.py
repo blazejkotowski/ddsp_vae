@@ -29,7 +29,6 @@ if __name__ == '__main__':
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
-  parser.add_argument('--output_path', help='Directory to save the model')
   parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
   parser.add_argument('--training_dir', type=str, default='training', help='Directory to save the training logs')
   parser.add_argument('--model_name', type=str, default='noisebandnet', help='Name of the model')
