@@ -1,7 +1,7 @@
 import lightning as L
 import torch
+torch.set_default_dtype(torch.float32)
 import argparse
-torch.set_default_device('cpu')
 
 from torch.utils.data import DataLoader
 from lib.dataset_tool import AudioDataset
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     min_batch_size=config.batch_size,
     sampling_rate=config.fs,
     device=config.device
-  )
+  )ls
 
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
