@@ -55,6 +55,21 @@ def compute_centroid(audio_data, sampling_rate, n_fft=512, hop_length=128, norma
     print(f'Done. Max centroid {max_centroid:.6}, min centroid {min_centroid:.5}.')
     return centroid.squeeze(0), max_centroid, min_centroid
 
+# Compute spectral flatness with librosa
+def compute_flatness(audio_data, sampling_rate, n_fft=512, hop_length=128, normalise=True, interpolate=True):
+    print(f'Computing dataset spectral flatness...')
+    flatness = li.feature.spectral_flatness(y=audio_data.squeeze(0).numpy(), sr=sampling_rate, n_fft=n_fft, hop_length=hop_length)
+    flatness = torch.from_numpy(flatness)
+    flatness = torch.nan_to_num(flatness, nan=0.0).unsqueeze(0) #handle silences
+    if interpolate:
+        flatness = F.interpolate(flatness, size=audio_data.shape[-1], mode='linear') #audio-rate flatness curve
+    max_flatness = torch.max(flatness)
+    min_flatness = torch.min(flatness)
+    if normalise:
+        flatness = normalise_feature(flatness, max_flatness, min_flatness) #normalise in a [0,1] range
+    print(f'Done. Max flatness {max_flatness:.5}, min flatness {min_flatness:.5}.')
+    return flatness.squeeze(0), max_flatness, min_flatness
+
 def load_control_params(path, device, repeats):
     #find control params in path
     control_params = []
@@ -79,7 +94,7 @@ class AudioDataset(Dataset):
     device : str
         Device (cuda or cpu)
     auto_control_params : list
-        Which control parameters to compute automatically. Options: 'loudness', 'centroid'
+        Which control parameters to compute automatically. Options: 'loudness', 'centroid', 'flatness'
     control_params_path : str
         If not None it will load control params from this path. Otherwise it will compute them automatically.
     """
@@ -105,6 +120,11 @@ class AudioDataset(Dataset):
                                                                         n_fft=512, hop_length=128, normalise=True)
                 centroid = centroid.to(device)
                 self.control_params.append(centroid)
+            if "flatness" in auto_control_params:
+                flatness, max_flatness, min_flatness = compute_flatness(audio_data=self.audio_data, sampling_rate=sampling_rate,
+                                                                        n_fft=512, hop_length=128, normalise=True)
+                flatness = flatness.to(device)
+                self.control_params.append(flatness)
         else:
             #user-defined control params
             self.control_params = load_control_params(path=control_params_path, device=device, repeats=repeats)
