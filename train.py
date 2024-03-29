@@ -51,7 +51,10 @@ if __name__ == '__main__':
 
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
-  nbn = NoiseBandNet(learning_rate=config.lr)
+  nbn = NoiseBandNet(
+    n_control_params=len(config.control_params),
+    learning_rate=config.lr
+  )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
 
