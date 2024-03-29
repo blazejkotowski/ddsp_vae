@@ -33,7 +33,7 @@ if __name__ == '__main__':
   parser.add_argument('--training_dir', type=str, default='training', help='Directory to save the training logs')
   parser.add_argument('--model_name', type=str, default='noisebandnet', help='Name of the model')
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
-  parser.add_argument('--control_params', type=list, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: loudness, centroid, contrast')
+  parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: loudness, centroid, contrast')
   config = parser.parse_args()
 
   n_signal = int(config.audio_chunk_duration * config.fs)
