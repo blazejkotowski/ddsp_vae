@@ -58,7 +58,7 @@ def compute_centroid(audio_data, sampling_rate, n_fft=512, hop_length=128, norma
 # Compute spectral flatness with librosa
 def compute_flatness(audio_data, sampling_rate, n_fft=512, hop_length=128, normalise=True, interpolate=True):
     print(f'Computing dataset spectral flatness...')
-    flatness = li.feature.spectral_flatness(y=audio_data.squeeze(0).numpy(), sr=sampling_rate, n_fft=n_fft, hop_length=hop_length)
+    flatness = li.feature.spectral_flatness(y=audio_data.squeeze(0).numpy(), n_fft=n_fft, hop_length=hop_length)
     flatness = torch.from_numpy(flatness)
     flatness = torch.nan_to_num(flatness, nan=0.0).unsqueeze(0) #handle silences
     if interpolate:
