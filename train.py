@@ -45,7 +45,8 @@ if __name__ == '__main__':
     audio_size_samples=n_signal,
     min_batch_size=config.batch_size,
     sampling_rate=config.fs,
-    device=config.device
+    device=config.device,
+    auto_control_params=config.control_params
   )
 
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
