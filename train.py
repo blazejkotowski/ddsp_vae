@@ -27,13 +27,14 @@ if __name__ == '__main__':
   parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
   parser.add_argument('--n_band', type=int, default=2048, help='Number of bands of the filter bank')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
+  parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden layers')
   parser.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
   parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
   parser.add_argument('--training_dir', type=str, default='training', help='Directory to save the training logs')
   parser.add_argument('--model_name', type=str, default='noisebandnet', help='Name of the model')
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
-  parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: loudness, centroid, contrast')
+  parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
   config = parser.parse_args()
 
   n_signal = int(config.audio_chunk_duration * config.fs)
@@ -53,7 +54,12 @@ if __name__ == '__main__':
 
   nbn = NoiseBandNet(
     n_control_params=len(config.control_params),
-    learning_rate=config.lr
+    learning_rate=config.lr,
+    samplerate=config.fs,
+    hidden_size=config.hidden_size,
+    m_filters=config.n_band,
+    resampling_factor=config.resampling_factor,
+    torch_device=config.device
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)

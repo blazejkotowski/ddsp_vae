@@ -37,6 +37,8 @@ class NoiseBandNet(L.LightningModule):
                learning_rate: float = 1e-3,
                torch_device = 'cpu'):
     super().__init__()
+    # Save hyperparameters in the checkpoints
+    self.save_hyperparameters()
 
     self._filterbank = FilterBank(
       m_filters=m_filters,
@@ -182,8 +184,8 @@ class NoiseBandNet(L.LightningModule):
     """Delegate the noisebands to the filterbank object."""
     return self._filterbank.noisebands
 
-
-  def _construct_loss_function(self):
+  @staticmethod
+  def _construct_loss_function():
     """
     Construct the loss function for the model: a multi-resolution STFT loss
     """
