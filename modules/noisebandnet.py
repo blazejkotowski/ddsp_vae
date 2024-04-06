@@ -7,10 +7,12 @@ import torch.nn.functional as F
 
 import numpy as np
 import auraloss
+import math
+
+import cached_conv as cc
 
 from modules.filterbank import FilterBank
 
-import math
 
 from typing import List
 
@@ -45,8 +47,10 @@ class NoiseBandNet(L.LightningModule):
       fs=samplerate
     )
 
-    self._resampling_factor = resampling_factor
+    self.resampling_factor = resampling_factor
     self._torch_device = torch_device
+    self.n_control_params = n_control_params
+    self._samplerate = samplerate
 
     # Define the neural network
     ## Parallel connection of the control parameters to the dedicated MLPs
@@ -63,10 +67,11 @@ class NoiseBandNet(L.LightningModule):
 
     # Define the loss
     self.loss = self._construct_loss_function()
+
     self._learning_rate = learning_rate
 
 
-  def forward(self, control_params: torch.Tensor) -> torch.Tensor:
+  def forward(self, control_params: List[torch.Tensor]) -> torch.Tensor:
     """
     Forward pass of the network.
     Args:
@@ -99,7 +104,7 @@ class NoiseBandNet(L.LightningModule):
     x_audio, control_params = batch
 
     # Downsample the control params by resampling factor
-    control_params = [F.interpolate(c, scale_factor=1/self._resampling_factor, mode='linear') for c in control_params]
+    control_params = [F.interpolate(c, scale_factor=1/self.resampling_factor, mode='linear') for c in control_params]
 
     # Predict the audio
     y_audio = self.forward(control_params)
@@ -109,22 +114,31 @@ class NoiseBandNet(L.LightningModule):
     self.log("train_loss", loss, prog_bar=True, logger=True)
     return loss
 
+  # TODO: Generate the validationa audio and add to tensorboard
+  # def on_validation_epoch_end(self, )
+
 
   def configure_optimizers(self):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
 
-  def _predict_amplitudes(self, control_params: torch.Tensor) -> torch.Tensor:
+  def _predict_amplitudes(self, control_params: List[torch.Tensor]) -> torch.Tensor:
     """
     Predict noiseband amplitudes given the control parameters.
     Args:
-      - control_params: List[torch.Tensor[batch_size, signal_length, 1]], a list of control parameters
+      - control_params: List[torch.Tensor[batch_size, 1, signal_length]], a list of control parameters
     Returns:
       - amps: torch.Tensor, the predicted amplitudes of the noise bands
     """
     control_params = [c.permute(0, 2, 1) for c in control_params]
+
     # pass through the control parameter MLPs
-    x = [mlp(param) for param, mlp in zip(control_params, self.control_param_mlps)] # out: [control_params_number, batch_size, signal_length, hidden_size]
+    # x = [mlp(param) for param, mlp in zip(tuple(control_params), self.control_param_mlps)] # out: [control_params_number, batch_size, signal_length, hidden_size]
+    x = []
+    for i, mlp in enumerate(self.control_param_mlps):
+      x.append(mlp(control_params[i]))
+    # out: [control_params_number, batch_size, signal_length, hidden_size]
+
 
     # concatenate both mlp outputs together
     x = torch.cat(x, dim=-1) # out: [batch_size, signal_length, hidden_size * control_params_number]
@@ -154,7 +168,7 @@ class NoiseBandNet(L.LightningModule):
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
     # upsample the amplitudes
-    upsampled_amplitudes = F.interpolate(amplitudes, scale_factor=self._resampling_factor, mode='linear')
+    upsampled_amplitudes = F.interpolate(amplitudes, scale_factor=float(self.resampling_factor), mode='linear')
 
     # fit the noisebands into the amplitudes
     repeats = upsampled_amplitudes.shape[-1] // self._noisebands.shape[-1] + 1
@@ -176,16 +190,17 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - y: torch.Tensor, the output tensor
     """
-    return 2*torch.pow(torch.sigmoid(x), np.log(10)) + 1e-18
+    return 2*torch.pow(torch.sigmoid(x), math.log(10)) + 1e-18
 
 
   @property
-  def _noisebands(self) -> List[np.ndarray]:
+  def _noisebands(self):
     """Delegate the noisebands to the filterbank object."""
     return self._filterbank.noisebands
 
-  @staticmethod
-  def _construct_loss_function():
+
+  @torch.jit.ignore
+  def _construct_loss_function(self):
     """
     Construct the loss function for the model: a multi-resolution STFT loss
     """
@@ -196,7 +211,7 @@ class NoiseBandNet(L.LightningModule):
 
 
   @staticmethod
-  def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> nn.Sequential:
+  def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
     """
     Constructs a multi-layer perceptron.
     Args:
@@ -204,7 +219,7 @@ class NoiseBandNet(L.LightningModule):
     - hidden_layers: int, the number of hidden layers
     - hidden_size: int, the size of each hidden layer
     Returns:
-    - mlp: nn.Sequential, the multi-layer perceptron
+    - mlp: cc.CachedSequential, the multi-layer perceptron
     """
     sizes = [in_size]
     sizes.extend(hidden_layers * [hidden_size])
@@ -215,4 +230,4 @@ class NoiseBandNet(L.LightningModule):
       layers.append(nn.LayerNorm(sizes[i+1]))
       layers.append(nn.LeakyReLU())
 
-    return nn.Sequential(*layers)
+    return cc.CachedSequential(*layers)

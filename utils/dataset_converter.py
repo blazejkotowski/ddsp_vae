@@ -2,6 +2,7 @@ import os
 import argparse
 import subprocess
 from tqdm import tqdm
+from glob import glob
 
 def convert_to_wav(input_dir, output_dir):
     # Check if output directory exists, create it if not
@@ -9,16 +10,17 @@ def convert_to_wav(input_dir, output_dir):
         os.makedirs(output_dir)
 
     # Get a list of all audio files in the input directory
-    audio_files = [f for f in os.listdir(input_dir) if f.endswith(('.wav', '.mp3', '.ogg', '.flac', '.aac', '.m4a'))]
+    audio_files = glob(os.path.join(input_dir, '*', '*'))
+    audio_files = [f for f in audio_files if f.endswith(('.wav', '.mp3', '.ogg', '.flac', '.aac', '.m4a'))]
 
     for audio_file in tqdm(audio_files):
-        input_file_path = os.path.join(input_dir, audio_file)
-        output_file_path = os.path.join(output_dir, os.path.splitext(audio_file)[0] + '.wav')
+        file_name = audio_file.split('/')[-1]
+        output_file_path = os.path.join(output_dir, os.path.splitext(file_name)[0] + '.wav')
 
         # Command to convert audio file to 44100 Hz, mono, 16-bit WAV
         command = [
             'sox',
-            input_file_path,
+            audio_file,
             '-r', '44100',             # Sample rate
             '-c', '1',                 # Mono
             '-b', '16',                # 16-bit
