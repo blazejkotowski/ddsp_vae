@@ -24,6 +24,7 @@ class NoiseBandNet(L.LightningModule):
   Args:
     - m_filters: int, the number of filters in the filterbank
     - hidden_size: int, the size of the hidden layers of the neural network
+    - hidden_layers: int, the number of hidden layers of the neural network
     - n_control_params: int, the number of control parameters to be used
     - samplerate : int, the sampling rate of the input signal
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
@@ -34,6 +35,7 @@ class NoiseBandNet(L.LightningModule):
                m_filters: int = 2048,
                samplerate: int = 44100,
                hidden_size: int = 128,
+               hidden_layers: int = 3,
                n_control_params: int = 2,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
@@ -46,7 +48,7 @@ class NoiseBandNet(L.LightningModule):
       m_filters=m_filters,
       fs=samplerate
     )
-
+    self._hidden_layers = hidden_layers
     self.resampling_factor = resampling_factor
     self._torch_device = torch_device
     self.n_control_params = n_control_params
@@ -60,7 +62,7 @@ class NoiseBandNet(L.LightningModule):
     self.gru = nn.GRU((hidden_size) * n_control_params, hidden_size, batch_first=True)
 
     ## Intermediary 3-layer MLP
-    self.inter_mlp = self._make_mlp(hidden_size + n_control_params, 3, hidden_size)
+    self.inter_mlp = self._make_mlp(hidden_size + n_control_params, self._hidden_layers, hidden_size)
 
     ## Output layer predicting amplitudes
     self.output_amps = nn.Linear(hidden_size, len(self._noisebands))
