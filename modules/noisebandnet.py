@@ -141,7 +141,6 @@ class NoiseBandNet(L.LightningModule):
       x.append(mlp(control_params[i]))
     # out: [control_params_number, batch_size, signal_length, hidden_size]
 
-
     # concatenate both mlp outputs together
     x = torch.cat(x, dim=-1) # out: [batch_size, signal_length, hidden_size * control_params_number]
 
@@ -172,9 +171,12 @@ class NoiseBandNet(L.LightningModule):
     # upsample the amplitudes
     upsampled_amplitudes = F.interpolate(amplitudes, scale_factor=float(self.resampling_factor), mode='linear')
 
+    # roll the noisebands randomly to avoid overfitting to the noise values
+    noisebands = torch.roll(self._noisebands, shifts=int(torch.randint(0, self._noisebands.shape[-1], size=(1,))), dims=-1)
+
     # fit the noisebands into the amplitudes
-    repeats = upsampled_amplitudes.shape[-1] // self._noisebands.shape[-1] + 1
-    looped_bands = self._noisebands.repeat(1, repeats) # repeat
+    repeats = upsampled_amplitudes.shape[-1] // noisebands.shape[-1] + 1
+    looped_bands = noisebands.repeat(1, repeats) # repeat
     looped_bands = looped_bands[:, :upsampled_amplitudes.shape[-1]] # trim
     looped_bands = looped_bands.to(upsampled_amplitudes.device, dtype=torch.float32)
 
