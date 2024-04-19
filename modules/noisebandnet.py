@@ -48,11 +48,15 @@ class NoiseBandNet(L.LightningModule):
       m_filters=m_filters,
       fs=samplerate
     )
-    self._hidden_layers = hidden_layers
     self.resampling_factor = resampling_factor
-    self._torch_device = torch_device
     self.n_control_params = n_control_params
+
+    self._hidden_layers = hidden_layers
+    self._torch_device = torch_device
     self._samplerate = samplerate
+    self._overlap_factor = 0
+    self._last_amplitudes = None
+    self._noisebands_shift = 0
 
     # Define the neural network
     ## Parallel connection of the control parameters to the dedicated MLPs
@@ -168,17 +172,40 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
+    # TODO: The intepolation should take into account the previously generated amplitudes
+    # TODO: For the sake of the continouity of the signal
+    overlap_samples = int(amplitudes.shape[-1] * self._overlap_factor)
+    if self._last_amplitudes is not None and \
+      amplitudes.shape[0] == self._last_amplitudes.shape[0]:
+      # Linearly spaced blending weightss
+      blend_weights = torch.linspace(0, 1, overlap_samples)
+      for i in range(overlap_samples):
+          amplitudes[:, :, i] = \
+            blend_weights[i] * self._last_amplitudes[:, :, -overlap_samples + i] \
+            + (1 - blend_weights[i]) * amplitudes[:, :, i]
+    self._last_amplitudes = amplitudes[:, :, -overlap_samples:]
+
     # upsample the amplitudes
     upsampled_amplitudes = F.interpolate(amplitudes, scale_factor=float(self.resampling_factor), mode='linear')
 
-    # roll the noisebands randomly to avoid overfitting to the noise values
-    noisebands = torch.roll(self._noisebands, shifts=int(torch.randint(0, self._noisebands.shape[-1], size=(1,))), dims=-1)
+    # shift the noisebands to maintain the continuity of the noise signal
+    noisebands = torch.roll(self._noisebands, shifts=-self._noisebands_shift, dims=-1)
+    print(f"Rolling noise by {self._noisebands_shift} samples")
+
+    if self.training:
+      # roll the noisebands randomly to avoid overfitting to the noise values
+      # check whether model is training
+      print("Rolling the noisebands")
+      noisebands = torch.roll(self._noisebands, shifts=int(torch.randint(0, self._noisebands.shape[-1], size=(1,))), dims=-1)
 
     # fit the noisebands into the amplitudes
-    repeats = upsampled_amplitudes.shape[-1] // noisebands.shape[-1] + 1
+    repeats = math.ceil(upsampled_amplitudes.shape[-1] / noisebands.shape[-1])
     looped_bands = noisebands.repeat(1, repeats) # repeat
     looped_bands = looped_bands[:, :upsampled_amplitudes.shape[-1]] # trim
     looped_bands = looped_bands.to(upsampled_amplitudes.device, dtype=torch.float32)
+
+    # Save the noisebands shift for the next iteration
+    self._noisebands_shift = (self._noisebands_shift + upsampled_amplitudes.shape[-1]) % self._noisebands.shape[-1]
 
     # synthesize the signal
     signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
