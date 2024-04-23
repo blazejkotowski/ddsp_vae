@@ -123,6 +123,7 @@ if __name__ == '__main__':
   nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint)
                                           # n_control_params=3) # this is for ybalferran model
   nbn.eval()
+  torch.set_grad_enabled(False)
 
   start_time = time.time()
   # Generate audio in chunks
@@ -131,25 +132,30 @@ if __name__ == '__main__':
   n_noiseband = int(nbn._noisebands.shape[-1] // nbn.resampling_factor)
   n_chunk = n_noiseband # Actual lenght of loopable noiseband
 
-  n_chunk = int(8192 / 32) # Arbitrary
-
+  n_chunk = int(1024 / 32) # Arbitrary
   chunks = np.ceil(n_signal / n_chunk).astype(int)
 
   print(f"Concatenating {chunks} chunks.")
   audio = None
+  previous_hidden = None
   for i in range(chunks):
     if (i+1)*n_chunk > n_signal:
       current_control = [c[:, :, i*n_chunk:] for c in control_params]
     else:
       current_control = [c[:, :, i*n_chunk:(i+1)*n_chunk] for c in control_params]
 
+    audio_chunk, previous_hidden = nbn(current_control, previous_hidden)
+    audio_chunk = audio_chunk.squeeze(1).detach()
+
+    # Concatenate with previous audio
     if audio is None:
-      audio = nbn(current_control).squeeze(1).detach()
+      audio = audio_chunk
     else:
-      audio = torch.cat([audio, nbn(current_control).squeeze(1).detach()], dim=-1)
+      audio = torch.cat([audio, audio_chunk], dim=-1)
 
   # # Generate all at once
-  # audio = nbn(control_params).squeeze(1).detach()
+  # audio, hidden = nbn(control_params)
+  # audio = audio.squeeze(1).detach()
 
   elapsed_time = time.time() - start_time
   audio_duration = audio.shape[-1] / config.fs

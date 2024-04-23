@@ -14,7 +14,7 @@ import cached_conv as cc
 from modules.filterbank import FilterBank
 
 
-from typing import List
+from typing import List, Tuple, Optional
 
 class NoiseBandNet(L.LightningModule):
   """
@@ -54,8 +54,6 @@ class NoiseBandNet(L.LightningModule):
     self._hidden_layers = hidden_layers
     self._torch_device = torch_device
     self._samplerate = samplerate
-    self._overlap_factor = 0
-    self._last_amplitudes = None
     self._noisebands_shift = 0
 
     # Define the neural network
@@ -77,20 +75,21 @@ class NoiseBandNet(L.LightningModule):
     self._learning_rate = learning_rate
 
 
-  def forward(self, control_params: List[torch.Tensor]) -> torch.Tensor:
+  def forward(self, control_params: List[torch.Tensor], init_hidden_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Forward pass of the network.
     Args:
       - control_params: List[torch.Tensor[batch_size, signal_length, 1]], a list of control parameters
+      - init_hidden_state: torch.Tensor[1, batch_size, hidden_size], the initial hidden state of the GRU
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
     # predict the amplitudes of the noise bands
-    amps = self._predict_amplitudes(control_params)
+    amps, hidden_state = self._predict_amplitudes(control_params, init_hidden_state)
 
     # synthesize the signal
     signal = self._synthesize(amps)
-    return signal
+    return signal, hidden_state
 
 
   def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -113,7 +112,7 @@ class NoiseBandNet(L.LightningModule):
     control_params = [F.interpolate(c, scale_factor=1/self.resampling_factor, mode='linear') for c in control_params]
 
     # Predict the audio
-    y_audio = self.forward(control_params)
+    y_audio, _ = self.forward(control_params)
 
     # Compute return the loss
     loss = self.loss(y_audio, x_audio)
@@ -128,13 +127,16 @@ class NoiseBandNet(L.LightningModule):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
 
-  def _predict_amplitudes(self, control_params: List[torch.Tensor]) -> torch.Tensor:
+  def _predict_amplitudes(self,
+                          control_params: List[torch.Tensor],
+                          init_hidden_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Predict noiseband amplitudes given the control parameters.
     Args:
       - control_params: List[torch.Tensor[batch_size, 1, signal_length]], a list of control parameters
+      - init_hidden_state: torch.Tensor[1, batch_size, hidden_size], the initial hidden state of the GRU
     Returns:
-      - amps: torch.Tensor, the predicted amplitudes of the noise bands
+      - amps, hidden_state: Tuple[torch.Tensor, torch.Tensor], the predicted amplitudes of the noise bands and the last hidden state of the GRU
     """
     control_params = [c.permute(0, 2, 1) for c in control_params]
 
@@ -150,7 +152,9 @@ class NoiseBandNet(L.LightningModule):
 
     # pass concatenated control parameter outputs through GRU
     # GRU returns (output, final_hidden_state) tuple. We are interested in the output.
-    x = self.gru(x)[0] # out: [batch_size, signal_length, hidden_size]
+    # and in the hidden state only in case of streaming application
+    x, hidden_state = self.gru(x, hx=init_hidden_state) # out: [batch_size, signal_length, hidden_size]
+    # x = self.gru(x)[0] # out: [batch_size, signal_length, hidden_size]
 
     # append the control params to the GRU output
     for c in control_params:
@@ -161,7 +165,7 @@ class NoiseBandNet(L.LightningModule):
 
     # pass through the output layer and custom activation
     amps = self._scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1) # out: [batch_size, n_bands, signal_length]
-    return amps
+    return amps, hidden_state
 
 
   def _synthesize(self, amplitudes: torch.Tensor) -> torch.Tensor:
@@ -172,33 +176,18 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
-    # TODO: The intepolation should take into account the previously generated amplitudes
-    # TODO: For the sake of the continouity of the signal
-    overlap_samples = int(amplitudes.shape[-1] * self._overlap_factor)
-    if self._last_amplitudes is not None and \
-      amplitudes.shape[0] == self._last_amplitudes.shape[0]:
-      # Linearly spaced blending weightss
-      blend_weights = torch.linspace(0, 1, overlap_samples)
-      for i in range(overlap_samples):
-          amplitudes[:, :, i] = \
-            blend_weights[i] * self._last_amplitudes[:, :, -overlap_samples + i] \
-            + (1 - blend_weights[i]) * amplitudes[:, :, i]
-    self._last_amplitudes = amplitudes[:, :, -overlap_samples:]
-
     # upsample the amplitudes
     upsampled_amplitudes = F.interpolate(amplitudes, scale_factor=float(self.resampling_factor), mode='linear')
 
     # shift the noisebands to maintain the continuity of the noise signal
     noisebands = torch.roll(self._noisebands, shifts=-self._noisebands_shift, dims=-1)
-    print(f"Rolling noise by {self._noisebands_shift} samples")
 
     if self.training:
       # roll the noisebands randomly to avoid overfitting to the noise values
       # check whether model is training
-      print("Rolling the noisebands")
-      noisebands = torch.roll(self._noisebands, shifts=int(torch.randint(0, self._noisebands.shape[-1], size=(1,))), dims=-1)
+      noisebands = torch.roll(noisebands, shifts=int(torch.randint(0, noisebands.shape[-1], size=(1,))), dims=-1)
 
-    # fit the noisebands into the amplitudes
+    # fit the noisebands into the mplitudes
     repeats = math.ceil(upsampled_amplitudes.shape[-1] / noisebands.shape[-1])
     looped_bands = noisebands.repeat(1, repeats) # repeat
     looped_bands = looped_bands[:, :upsampled_amplitudes.shape[-1]] # trim

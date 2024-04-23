@@ -6,7 +6,7 @@ import cached_conv as cc
 
 from modules import NoiseBandNet
 
-from typing import List
+from typing import Optional
 
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
@@ -18,11 +18,12 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
     super().__init__()
 
     self.pretrained = pretrained
+    self.hx = torch.zeros(pretrained.gru.num_layers, 1, pretrained.gru.hidden_size)
 
     # # Calculate the input ratio
     x_len = 2**14
     x = [torch.zeros(1, 1, x_len) for _ in range(self.pretrained.n_control_params)]
-    y = self.pretrained(x)
+    y, _ = self.pretrained(x)
     in_ratio = y.shape[-1] / x_len
     print(f"in_ratio: {in_ratio}")
 
@@ -43,12 +44,14 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
     if not isinstance(control_params, list):
       control_params = [c.unsqueeze(-2) for c in control_params.permute(1, 0, 2)]
 
-    # batch_size = control_params[0].shape[:-2]
-    # print(f"batch_size: {batch_size}")
+    # If the batch size does not match the hidden state, reset it
+    if self.hx is not None and self.hx.shape[1] != control_params[0].shape[0]:
+      hx = None
+    else:
+      hx = self.hx
 
-    y = self.pretrained(control_params)
-    print(f"control_params[0].shape: {control_params[0].shape}\ny.shape: {y.shape}")
-    return y
+    audio, self.hx = self.pretrained(control_params, hx)
+    return audio
 
 
 if __name__ == '__main__':
