@@ -9,10 +9,8 @@ import numpy as np
 import auraloss
 import math
 
-import cached_conv as cc
-
 from modules.filterbank import FilterBank
-
+from modules.blocks import VariationalEncoder, VariationalDecoder
 
 from typing import List, Tuple, Optional
 
@@ -25,7 +23,7 @@ class NoiseBandNet(L.LightningModule):
     - m_filters: int, the number of filters in the filterbank
     - hidden_size: int, the size of the hidden layers of the neural network
     - hidden_layers: int, the number of hidden layers of the neural network
-    - n_control_params: int, the number of control parameters to be used
+    - latent_size: int, number of latent dimensions
     - samplerate : int, the sampling rate of the input signal
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
     - learning_rate: float, the learning rate for the optimizer
@@ -36,7 +34,7 @@ class NoiseBandNet(L.LightningModule):
                samplerate: int = 44100,
                hidden_size: int = 128,
                hidden_layers: int = 3,
-               n_control_params: int = 2,
+               latent_size: int = 16,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
                torch_device = 'cpu'):
@@ -49,25 +47,26 @@ class NoiseBandNet(L.LightningModule):
       fs=samplerate
     )
     self.resampling_factor = resampling_factor
-    self.n_control_params = n_control_params
+    self.latent_size = latent_size
 
-    self._hidden_layers = hidden_layers
     self._torch_device = torch_device
-    self._samplerate = samplerate
     self._noisebands_shift = 0
 
     # Define the neural network
-    ## Parallel connection of the control parameters to the dedicated MLPs
-    self.control_param_mlps = nn.ModuleList([self._make_mlp(1, 1, hidden_size) for _ in range(n_control_params)])
+    ## Encoder to extract latents from the input audio signal
+    self.encoder = VariationalEncoder(
+      hidden_size=hidden_size,
+      sample_rate=samplerate,
+      latent_size=latent_size
+    )
 
-    ## Intermediate GRU layer
-    self.gru = nn.GRU((hidden_size) * n_control_params, hidden_size, batch_first=True)
-
-    ## Intermediary 3-layer MLP
-    self.inter_mlp = self._make_mlp(hidden_size + n_control_params, self._hidden_layers, hidden_size)
-
-    ## Output layer predicting amplitudes
-    self.output_amps = nn.Linear(hidden_size, len(self._noisebands))
+    ## Decoder to predict the amplitudes of the noise bands
+    self.decoder = VariationalDecoder(
+      latent_size=latent_size,
+      hidden_layers=hidden_layers,
+      hidden_size=hidden_size,
+      n_bands=m_filters
+    )
 
     # Define the loss
     self.loss = self._construct_loss_function()
@@ -75,7 +74,7 @@ class NoiseBandNet(L.LightningModule):
     self._learning_rate = learning_rate
 
 
-  def forward(self, control_params: List[torch.Tensor], init_hidden_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+  def forward(self, audio: torch.Tensor, init_hidden_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Forward pass of the network.
     Args:
@@ -84,15 +83,18 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
+    # encode the audio signal
+    z = self.encoder(audio)
+
     # predict the amplitudes of the noise bands
-    amps, hidden_state = self._predict_amplitudes(control_params, init_hidden_state)
+    amps = self.decoder(z)
 
     # synthesize the signal
     signal = self._synthesize(amps)
-    return signal, hidden_state
+    return signal
 
 
-  def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
+  def training_step(self, x_audio: torch.Tensor, batch_idx: int) -> torch.Tensor:
     """
     Compute the loss for a batch of data
 
@@ -106,13 +108,8 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       loss: torch.Tensor[batch_size, 1], tensor of loss
     """
-    x_audio, control_params = batch
-
-    # Downsample the control params by resampling factor
-    control_params = [F.interpolate(c, scale_factor=1/self.resampling_factor, mode='linear') for c in control_params]
-
     # Predict the audio
-    y_audio, _ = self.forward(control_params)
+    y_audio = self.forward(x_audio)
 
     # Compute return the loss
     loss = self.loss(y_audio, x_audio)
@@ -125,47 +122,6 @@ class NoiseBandNet(L.LightningModule):
 
   def configure_optimizers(self):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
-
-
-  def _predict_amplitudes(self,
-                          control_params: List[torch.Tensor],
-                          init_hidden_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Predict noiseband amplitudes given the control parameters.
-    Args:
-      - control_params: List[torch.Tensor[batch_size, 1, signal_length]], a list of control parameters
-      - init_hidden_state: torch.Tensor[1, batch_size, hidden_size], the initial hidden state of the GRU
-    Returns:
-      - amps, hidden_state: Tuple[torch.Tensor, torch.Tensor], the predicted amplitudes of the noise bands and the last hidden state of the GRU
-    """
-    control_params = [c.permute(0, 2, 1) for c in control_params]
-
-    # pass through the control parameter MLPs
-    # x = [mlp(param) for param, mlp in zip(tuple(control_params), self.control_param_mlps)] # out: [control_params_number, batch_size, signal_length, hidden_size]
-    x = []
-    for i, mlp in enumerate(self.control_param_mlps):
-      x.append(mlp(control_params[i]))
-    # out: [control_params_number, batch_size, signal_length, hidden_size]
-
-    # concatenate both mlp outputs together
-    x = torch.cat(x, dim=-1) # out: [batch_size, signal_length, hidden_size * control_params_number]
-
-    # pass concatenated control parameter outputs through GRU
-    # GRU returns (output, final_hidden_state) tuple. We are interested in the output.
-    # and in the hidden state only in case of streaming application
-    x, hidden_state = self.gru(x, hx=init_hidden_state) # out: [batch_size, signal_length, hidden_size]
-    # x = self.gru(x)[0] # out: [batch_size, signal_length, hidden_size]
-
-    # append the control params to the GRU output
-    for c in control_params:
-      x = torch.cat([x, c], dim=-1) # out: [batch_size, signal_length, hidden_size + control_params_number]
-
-    # pass through the intermediary MLP
-    x = self.inter_mlp(x) # out: (batch_size, signal_length, hidden_size)
-
-    # pass through the output layer and custom activation
-    amps = self._scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1) # out: [batch_size, n_bands, signal_length]
-    return amps, hidden_state
 
 
   def _synthesize(self, amplitudes: torch.Tensor) -> torch.Tensor:
@@ -201,18 +157,6 @@ class NoiseBandNet(L.LightningModule):
     return signal
 
 
-  def _scaled_sigmoid(self, x: torch.Tensor):
-    """
-    Custom activation function for the output layer. It is a scaled sigmoid function,
-    guaranteeing that the output is always positive.
-    Args:
-      - x: torch.Tensor, the input tensor
-    Returns:
-      - y: torch.Tensor, the output tensor
-    """
-    return 2*torch.pow(torch.sigmoid(x), math.log(10)) + 1e-18
-
-
   @property
   def _noisebands(self):
     """Delegate the noisebands to the filterbank object."""
@@ -229,25 +173,3 @@ class NoiseBandNet(L.LightningModule):
                                                 hop_sizes=fft_sizes//4,
                                                 win_lengths=fft_sizes)
 
-
-  @staticmethod
-  def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
-    """
-    Constructs a multi-layer perceptron.
-    Args:
-    - in_size: int, the input layer size
-    - hidden_layers: int, the number of hidden layers
-    - hidden_size: int, the size of each hidden layer
-    Returns:
-    - mlp: cc.CachedSequential, the multi-layer perceptron
-    """
-    sizes = [in_size]
-    sizes.extend(hidden_layers * [hidden_size])
-
-    layers = []
-    for i in range(len(sizes)-1):
-      layers.append(nn.Linear(sizes[i], sizes[i+1]))
-      layers.append(nn.LayerNorm(sizes[i+1]))
-      layers.append(nn.LeakyReLU())
-
-    return cc.CachedSequential(*layers)

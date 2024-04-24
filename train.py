@@ -8,7 +8,7 @@ import argparse
 import os
 
 from torch.utils.data import DataLoader
-from lib.dataset_tool import AudioDataset
+from audio_dataset import AudioDataset
 
 from modules import NoiseBandNet
 
@@ -44,17 +44,13 @@ if __name__ == '__main__':
 
   dataset = AudioDataset(
     dataset_path=config.dataset_path,
-    audio_size_samples=n_signal,
-    min_batch_size=config.batch_size,
+    n_signal=n_signal,
     sampling_rate=config.fs,
-    device=config.device,
-    auto_control_params=config.control_params
   )
 
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
   nbn = NoiseBandNet(
-    n_control_params=len(config.control_params),
     learning_rate=config.lr,
     samplerate=config.fs,
     hidden_size=config.hidden_size,
