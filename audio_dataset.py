@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 import librosa as li
+import os
 from glob import glob
 
 class AudioDataset(Dataset):
@@ -43,8 +44,8 @@ class AudioDataset(Dataset):
       - audio: torch.Tensor, the audio tensor
     """
     audio = torch.tensor([])
-    for path in glob("*.wav"):
-      x = self._load_file(path)
+    for filepath in glob(os.path.join(path, '**', '*.wav'), recursive=True):
+      x = self._load_file(filepath)
       audio = torch.concat([audio, torch.from_numpy(x)], dim = 0)
     return audio
 
