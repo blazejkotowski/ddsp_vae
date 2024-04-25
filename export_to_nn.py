@@ -27,6 +27,17 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
     # print(f"in_ratio: {in_ratio}")
 
     self.register_method(
+      "forward",
+      in_channels = 1,
+      in_ratio = 1,
+      out_channels = 1,
+      out_ratio = 1,
+      input_labels=['(signal) Audio Input'],
+      output_labels=['(signal) Audio Output'],
+      test_method=True,
+    )
+
+    self.register_method(
       "decode",
       in_channels = self.pretrained.latent_size,
       in_ratio = self.pretrained.resampling_factor,
@@ -45,35 +56,26 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
       out_ratio = self.pretrained.resampling_factor,
       input_labels=['(signal) Audio Input'],
       output_labels=[f'(signal) Latent Dimension {i}' for i in range(1, self.pretrained.latent_size+1)],
-      test_methnod=True
-    )
-
-    self.register_method(
-      "forward",
-      in_channels = 1,
-      in_ratio = 1,
-      out_ratio = 1,
-      input_labels=['(signal) Audio Input'],
-      output_labels=['(signal) Audio Output'],
-      test_method=True,
+      test_method=True
     )
 
   @torch.jit.export
   def decode(self, latents: torch.Tensor):
     # Make into the list for nn~
-    audio = self.pretrained.decoder(latents.permute(0, 2, 1))
+    amps = self.pretrained.decoder(latents.permute(0, 2, 1))
+    audio = self.pretrained._synthesize(amps)
     return audio
 
   @torch.jit.export
   def encode(self, audio: torch.Tensor):
-    latents = self.pretrained.encoder(audio)
-    return latents
+    latents = self.pretrained.encoder(audio.squeeze(1))
+    return latents.permute(0, 2, 1)
 
   @torch.jit.export
   def forward(self, audio: torch.Tensor):
-    latents = self.encode(audio)
-    audio = self.decode(latents)
-    return audio
+    # latents = self.encode(audio)
+    # audio = self.decode(latents)
+    return self.pretrained(audio.squeeze(1))
 
 
 if __name__ == '__main__':

@@ -59,6 +59,7 @@ if __name__ == '__main__':
     m_filters=config.n_band,
     resampling_factor=config.resampling_factor,
     torch_device=config.device,
+    latent_size=config.latent_size
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)

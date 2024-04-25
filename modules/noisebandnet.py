@@ -75,12 +75,11 @@ class NoiseBandNet(L.LightningModule):
     self._learning_rate = learning_rate
 
 
-  def forward(self, audio: torch.Tensor, init_hidden_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+  def forward(self, audio: torch.Tensor) -> torch.Tensor:
     """
     Forward pass of the network.
     Args:
       - audio: torch.Tensor[batch_size, n_signal], the input audio signal
-      - init_hidden_state: torch.Tensor[1, batch_size, hidden_size], the initial hidden state of the GRU
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
@@ -88,12 +87,11 @@ class NoiseBandNet(L.LightningModule):
     z = self.encoder(audio)
 
     # predict the amplitudes of the noise bands
-    amps = self.decoder(z).permute(0, 2, 1)
+    amps = self.decoder(z)
 
     # synthesize the signal
     signal = self._synthesize(amps)
     return signal
-
 
   def training_step(self, x_audio: torch.Tensor, batch_idx: int) -> torch.Tensor:
     """

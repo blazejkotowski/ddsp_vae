@@ -132,6 +132,7 @@ class VariationalDecoder(nn.Module):
       - streaming: bool, streaming mode (realtime)
     Returns:
       - amplitudes: torch.Tensor, the predicted amplitudes [batch_size, n_bands, n_signal]
+
     """
     # Pass through the input MLP
     x = self.input_mlp(z)
@@ -147,6 +148,6 @@ class VariationalDecoder(nn.Module):
     x = self.inter_mlp(x)
 
     # Pass through the output layer
-    amplitudes = _scaled_sigmoid(self.output_amps(x))
+    amplitudes = _scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1)
 
     return amplitudes
