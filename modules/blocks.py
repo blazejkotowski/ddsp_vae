@@ -39,7 +39,7 @@ def _scaled_sigmoid(x: torch.Tensor):
 
 
 class VariationalEncoder(nn.Module):
-  def __init__(self, hidden_size: int, sample_rate: int = 44100, latent_size: int = 128, downsample_factor: int = 32, n_mfcc: int = 30):
+  def __init__(self, hidden_size: int, sample_rate: int = 44100, latent_size: int = 16, downsample_factor: int = 32, n_mfcc: int = 30):
     """
     Arguments:
       - hidden_size: int, the size of the hidden state of the GRU
@@ -100,13 +100,13 @@ class VariationalEncoder(nn.Module):
 
 
 class VariationalDecoder(nn.Module):
-  def __init__(self, latent_size: int, hidden_layers: int, hidden_size: int, n_bands: int):
+  def __init__(self, hidden_layers: int, hidden_size: int, n_bands: int, latent_size: int = 16):
     """
     Arguments:
-      - latent_size: int, the size of the latent space
       - hidden_layers: int, the number of hidden layers in the MLP
       - hidden_size: int, the size of each hidden layer in the MLP
       - n_bands: int, the number of noise bands
+      - latent_size: int, the size of the latent space
     """
     super().__init__()
 

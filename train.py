@@ -29,6 +29,7 @@ if __name__ == '__main__':
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden layers')
   parser.add_argument('--hidden_layers', type=int, default=3, help='Number of hidden layers')
+  parser.add_argument('--latent_size', type=int, default=16, help='Dimensionality of the latent space')
   parser.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
   parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
@@ -57,7 +58,7 @@ if __name__ == '__main__':
     hidden_layers=config.hidden_layers,
     m_filters=config.n_band,
     resampling_factor=config.resampling_factor,
-    torch_device=config.device
+    torch_device=config.device,
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
