@@ -25,7 +25,13 @@ class AudioDataset(Dataset):
 
     sample_start = idx * self._n_signal
     sample_end = sample_start + self._n_signal
-    return self._audio[sample_start:sample_end]
+
+    if sample_end > len(self._audio):
+      audio = torch.cat([self._audio[sample_start:], self._audio[:sample_end - len(self._audio)]])
+    else:
+      audio = self._audio[sample_start:sample_end]
+
+    return audio
 
   def _load_dataset(self, path: str) -> torch.Tensor:
     """

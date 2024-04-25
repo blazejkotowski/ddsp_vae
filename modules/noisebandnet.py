@@ -48,6 +48,7 @@ class NoiseBandNet(L.LightningModule):
     )
     self.resampling_factor = resampling_factor
     self.latent_size = latent_size
+    self.samplerate = samplerate
 
     self._torch_device = torch_device
     self._noisebands_shift = 0
@@ -65,7 +66,7 @@ class NoiseBandNet(L.LightningModule):
       latent_size=latent_size,
       hidden_layers=hidden_layers,
       hidden_size=hidden_size,
-      n_bands=m_filters
+      n_bands=self._filterbank.noisebands.shape[0]
     )
 
     # Define the loss
@@ -78,7 +79,7 @@ class NoiseBandNet(L.LightningModule):
     """
     Forward pass of the network.
     Args:
-      - control_params: List[torch.Tensor[batch_size, signal_length, 1]], a list of control parameters
+      - audio: torch.Tensor[batch_size, n_signal], the input audio signal
       - init_hidden_state: torch.Tensor[1, batch_size, hidden_size], the initial hidden state of the GRU
     Returns:
       - signal: torch.Tensor, the synthesized signal
@@ -87,7 +88,7 @@ class NoiseBandNet(L.LightningModule):
     z = self.encoder(audio)
 
     # predict the amplitudes of the noise bands
-    amps = self.decoder(z)
+    amps = self.decoder(z).permute(0, 2, 1)
 
     # synthesize the signal
     signal = self._synthesize(amps)
