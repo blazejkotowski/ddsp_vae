@@ -29,6 +29,7 @@ class NoiseBandNet(L.LightningModule):
     - learning_rate: float, the learning rate for the optimizer
     - torch_device: str, the device to run the model on
     - streaming: bool, whether to run the model in streaming mode
+    - beta: float, the β parameter for the β-VAE loss
   """
   def __init__(self,
                m_filters: int = 2048,
@@ -39,7 +40,8 @@ class NoiseBandNet(L.LightningModule):
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
                torch_device: str = 'cpu',
-               streaming: bool = False):
+               streaming: bool = False,
+               beta: float = 1.0):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
@@ -51,6 +53,7 @@ class NoiseBandNet(L.LightningModule):
     self.resampling_factor = resampling_factor
     self.latent_size = latent_size
     self.samplerate = samplerate
+    self.beta = beta
 
     self._torch_device = torch_device
     self._noisebands_shift = 0
@@ -74,7 +77,7 @@ class NoiseBandNet(L.LightningModule):
     )
 
     # Define the loss
-    self.loss = self._construct_loss_function()
+    self.recons_loss = self._construct_mrstft_loss()
 
     self._learning_rate = learning_rate
 
@@ -88,7 +91,8 @@ class NoiseBandNet(L.LightningModule):
       - signal: torch.Tensor, the synthesized signal
     """
     # encode the audio signal
-    z = self.encoder(audio)
+    mu, logvar = self.encoder(audio)
+    z = self.encoder.reparametrize(mu, logvar)
 
     # predict the amplitudes of the noise bands
     amps = self.decoder(z)
@@ -111,11 +115,26 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       loss: torch.Tensor[batch_size, 1], tensor of loss
     """
-    # Predict the audio
-    y_audio = self.forward(x_audio)
+    mu, logvar = self.encoder(x_audio)
+    z = self.encoder.reparametrize(mu, logvar)
 
-    # Compute return the loss
-    loss = self.loss(y_audio, x_audio)
+    # predict the amplitudes of the noise bands
+    amps = self.decoder(z)
+
+    # synthesize the signal
+    y_audio = self._synthesize(amps)
+
+    # Compute the reconstruction loss
+    recons_loss = self.recons_loss(y_audio, x_audio)
+
+    # Compute the KLD loss
+    kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=-1))
+
+    # Compute the total loss using β parameter
+    loss = recons_loss + self.beta * kld_loss
+
+    self.log("recons_loss", recons_loss, prog_bar=True, logger=True)
+    self.log("kld_loss", self.beta*kld_loss, prog_bar=True, logger=True)
     self.log("train_loss", loss, prog_bar=True, logger=True)
     return loss
 
@@ -167,7 +186,7 @@ class NoiseBandNet(L.LightningModule):
 
 
   @torch.jit.ignore
-  def _construct_loss_function(self):
+  def _construct_mrstft_loss(self):
     """
     Construct the loss function for the model: a multi-resolution STFT loss
     """

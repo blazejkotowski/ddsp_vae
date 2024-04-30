@@ -37,6 +37,7 @@ if __name__ == '__main__':
   parser.add_argument('--model_name', type=str, default='noisebandnet', help='Name of the model')
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
   parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
+  parser.add_argument('--beta', type=float, default=1.0, help='Beta parameter for the beta-VAE loss')
   config = parser.parse_args()
 
   n_signal = int(config.audio_chunk_duration * config.fs)
@@ -59,7 +60,8 @@ if __name__ == '__main__':
     m_filters=config.n_band,
     resampling_factor=config.resampling_factor,
     torch_device=config.device,
-    latent_size=config.latent_size
+    latent_size=config.latent_size,
+    beta=config.beta
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)

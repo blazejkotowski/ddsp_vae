@@ -5,6 +5,8 @@ import cached_conv as cc
 import math
 from torchaudio.transforms import MFCC
 
+from typing import Tuple
+
 def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
   """
   Constructs a multi-layer perceptron.
@@ -48,7 +50,7 @@ def _is_batch_size_one(x: torch.Tensor):
   return x.shape[0] == 1
 
 
-class Encoder(nn.Module):
+class VariationalEncoder(nn.Module):
   def __init__(self, hidden_size: int,
                sample_rate: int = 44100,
                latent_size: int = 16,
@@ -75,16 +77,16 @@ class Encoder(nn.Module):
     self.gru = nn.GRU(n_mfcc, hidden_size, batch_first = True)
     self.register_buffer('hidden_state', torch.zeros(1, 1, hidden_size), persistent=False)
 
-    self.dense_out = nn.Linear(hidden_size, latent_size)
+    self.mu_logvar_out = nn.Linear(hidden_size, 2*latent_size)
 
 
-  def forward(self, audio: torch.Tensor):
+  def forward(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Forward pass of the encoder.
     Arguments:
       - audio: torch.Tensor, the input audio tensor [batch_size, n_samples]
     Returns:
-      - z: torch.Tensor, the latent space tensor
+      - mu, logvar: Tuple[torch.Tensor, torch.Tensor], the latent space tensor
     """
     # Extract MFCCs
     mfcc = self.mfcc(audio)
@@ -109,12 +111,27 @@ class Encoder(nn.Module):
       x, _ = self.gru(x)
 
     # Pass through the dense layer
-    z = self.dense_out(x)
+    z = self.mu_logvar_out(x)
 
-    return z
+    mu, logvar = z.chunk(2, dim = -1)
+
+    return mu, logvar
+
+  def reparametrize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    """
+    Reparametrization trick.
+    Arguments:
+      - mu: torch.Tensor, the mean of the latent space
+      - logvar: torch.Tensor, the log variance of the latent space
+    Returns:
+      - z: torch.Tensor, the latent space tensor
+    """
+    std = torch.exp(0.5*logvar)
+    eps = torch.randn_like(std)
+    return mu + eps*std
 
 
-class Decoder(nn.Module):
+class VariationalDecoder(nn.Module):
   def __init__(self, hidden_layers: int, hidden_size: int, n_bands: int, latent_size: int = 16, streaming: bool = False):
     """
     Arguments:
