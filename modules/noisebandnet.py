@@ -128,7 +128,7 @@ class NoiseBandNet(L.LightningModule):
     recons_loss = self.recons_loss(y_audio, x_audio)
 
     # Compute the KLD loss
-    kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=-1))
+    kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
 
     # Compute the total loss using β parameter
     loss = recons_loss + self.beta * kld_loss
