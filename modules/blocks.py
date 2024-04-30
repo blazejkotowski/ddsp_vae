@@ -37,9 +37,24 @@ def _scaled_sigmoid(x: torch.Tensor):
   """
   return 2*torch.pow(torch.sigmoid(x), math.log(10)) + 1e-18
 
+def _is_batch_size_one(x: torch.Tensor):
+  """
+  Check if the batch size of a tensor is one.
+  Args:
+    - x: torch.Tensor, the input tensor
+  Returns:
+    - bool, True if the batch size is one, False otherwise
+  """
+  return x.shape[0] == 1
 
-class VariationalEncoder(nn.Module):
-  def __init__(self, hidden_size: int, sample_rate: int = 44100, latent_size: int = 16, downsample_factor: int = 32, n_mfcc: int = 30):
+
+class Encoder(nn.Module):
+  def __init__(self, hidden_size: int,
+               sample_rate: int = 44100,
+               latent_size: int = 16,
+               downsample_factor: int = 32,
+               n_mfcc: int = 30,
+               streaming: bool = False):
     """
     Arguments:
       - hidden_size: int, the size of the hidden state of the GRU
@@ -47,8 +62,10 @@ class VariationalEncoder(nn.Module):
       - latent_size: int, the size of the output latent space
       - resampling_factor: int, the factor by which to downsample the mfccs
       - n_mfcc : int, the number of mfccs to extract
+      - streaming: bool, streaming mode (realtime)
     """
     super().__init__()
+    self.streaming = streaming
 
     self.downsample_factor = downsample_factor
     self.mfcc = MFCC(sample_rate = sample_rate, n_mfcc = n_mfcc)
@@ -61,13 +78,11 @@ class VariationalEncoder(nn.Module):
     self.dense_out = nn.Linear(hidden_size, latent_size)
 
 
-
-  def forward(self, audio: torch.Tensor, streaming: bool = False):
+  def forward(self, audio: torch.Tensor):
     """
     Forward pass of the encoder.
     Arguments:
       - audio: torch.Tensor, the input audio tensor [batch_size, n_samples]
-      - streaming: bool, streaming mode (realtime)
     Returns:
       - z: torch.Tensor, the latent space tensor
     """
@@ -87,7 +102,7 @@ class VariationalEncoder(nn.Module):
     x = self.normalization(x)
 
     # Pass through the GRU layer
-    if streaming:
+    if self.streaming and _is_batch_size_one(x):
       x, hx = self.gru(x, self.hidden_state)
       self.hidden_state.copy_(hx)
     else:
@@ -99,16 +114,18 @@ class VariationalEncoder(nn.Module):
     return z
 
 
-class VariationalDecoder(nn.Module):
-  def __init__(self, hidden_layers: int, hidden_size: int, n_bands: int, latent_size: int = 16):
+class Decoder(nn.Module):
+  def __init__(self, hidden_layers: int, hidden_size: int, n_bands: int, latent_size: int = 16, streaming: bool = False):
     """
     Arguments:
       - hidden_layers: int, the number of hidden layers in the MLP
       - hidden_size: int, the size of each hidden layer in the MLP
       - n_bands: int, the number of noise bands
       - latent_size: int, the size of the latent space
+      - streaming: bool, streaming mode (realtime)
     """
     super().__init__()
+    self.streaming = streaming
 
     # MLP mapping from the latent space
     self.input_mlp  = _make_mlp(latent_size, hidden_layers, hidden_size)
@@ -124,12 +141,11 @@ class VariationalDecoder(nn.Module):
     self.output_amps = nn.Linear(hidden_size, n_bands)
 
 
-  def forward(self, z: torch.Tensor, streaming: bool = False):
+  def forward(self, z: torch.Tensor):
     """
     Forward pass of the decoder.
     Arguments:
       - z: torch.Tensor, the latent space tensor
-      - streaming: bool, streaming mode (realtime)
     Returns:
       - amplitudes: torch.Tensor, the predicted amplitudes [batch_size, n_bands, n_signal]
 
@@ -138,7 +154,7 @@ class VariationalDecoder(nn.Module):
     x = self.input_mlp(z)
 
     # Pass through the GRU layer
-    if streaming:
+    if self.streaming and _is_batch_size_one(z):
       x, hx = self.gru(x, self.hidden_state)
       self.hidden_state.copy_(hx)
     else:

@@ -28,6 +28,7 @@ class NoiseBandNet(L.LightningModule):
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
     - learning_rate: float, the learning rate for the optimizer
     - torch_device: str, the device to run the model on
+    - streaming: bool, whether to run the model in streaming mode
   """
   def __init__(self,
                m_filters: int = 2048,
@@ -37,7 +38,8 @@ class NoiseBandNet(L.LightningModule):
                latent_size: int = 16,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
-               torch_device = 'cpu'):
+               torch_device: str = 'cpu',
+               streaming: bool = False):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
@@ -58,7 +60,8 @@ class NoiseBandNet(L.LightningModule):
     self.encoder = VariationalEncoder(
       hidden_size=hidden_size,
       sample_rate=samplerate,
-      latent_size=latent_size
+      latent_size=latent_size,
+      streaming=streaming
     )
 
     ## Decoder to predict the amplitudes of the noise bands
@@ -66,7 +69,8 @@ class NoiseBandNet(L.LightningModule):
       latent_size=latent_size,
       hidden_layers=hidden_layers,
       hidden_size=hidden_size,
-      n_bands=self._filterbank.noisebands.shape[0]
+      n_bands=self._filterbank.noisebands.shape[0],
+      streaming=streaming
     )
 
     # Define the loss

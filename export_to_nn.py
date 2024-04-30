@@ -6,11 +6,8 @@ import cached_conv as cc
 
 from modules import NoiseBandNet
 
-from typing import Optional
-
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
-
 
 class ScriptedNoiseBandNet(nn_tilde.Module):
   def __init__(self,
@@ -61,7 +58,6 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
 
   @torch.jit.export
   def decode(self, latents: torch.Tensor):
-    # Make into the list for nn~
     amps = self.pretrained.decoder(latents.permute(0, 2, 1))
     audio = self.pretrained._synthesize(amps)
     return audio
@@ -73,8 +69,6 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
 
   @torch.jit.export
   def forward(self, audio: torch.Tensor):
-    # latents = self.encode(audio)
-    # audio = self.decode(latents)
     return self.pretrained(audio.squeeze(1))
 
 
@@ -87,7 +81,7 @@ if __name__ == '__main__':
 
   cc.use_cached_conv(config.streaming)
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False)
+  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True)
   nbn._trainer = L.Trainer() # ugly workaround
   nbn.loss = None # for the torchscript
   nbn.eval()
