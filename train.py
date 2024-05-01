@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from audio_dataset import AudioDataset
 
 from modules import NoiseBandNet
+from modules.callbacks import BetaWarmupCallback
 
 DATASET_PATH = '/Users/bl/code/noisebandnet/datasets/freesound-walking/processed'
 SAMPLING_RATE = 44100
@@ -61,11 +62,19 @@ if __name__ == '__main__':
     resampling_factor=config.resampling_factor,
     torch_device=config.device,
     latent_size=config.latent_size,
-    beta=config.beta
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
 
+  # Beta parameter warmup
+  beta_warmup = BetaWarmupCallback(beta=config.beta)
+
   precision = 16 if config.mixed_precision else 32
-  trainer = L.Trainer(max_epochs=config.max_epochs, accelerator=config.device, precision=precision, log_every_n_steps=4, logger=tb_logger)
+  trainer = L.Trainer(
+    callbacks=[beta_warmup],
+    max_epochs=config.max_epochs,
+    accelerator=config.device,
+    precision=precision,
+    log_every_n_steps=4,
+    logger=tb_logger)
   trainer.fit(model=nbn, train_dataloaders=train_loader)

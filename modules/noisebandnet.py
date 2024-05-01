@@ -29,7 +29,6 @@ class NoiseBandNet(L.LightningModule):
     - learning_rate: float, the learning rate for the optimizer
     - torch_device: str, the device to run the model on
     - streaming: bool, whether to run the model in streaming mode
-    - beta: float, the β parameter for the β-VAE loss
   """
   def __init__(self,
                m_filters: int = 2048,
@@ -40,8 +39,7 @@ class NoiseBandNet(L.LightningModule):
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
                torch_device: str = 'cpu',
-               streaming: bool = False,
-               beta: float = 1.0):
+               streaming: bool = False):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
@@ -53,7 +51,7 @@ class NoiseBandNet(L.LightningModule):
     self.resampling_factor = resampling_factor
     self.latent_size = latent_size
     self.samplerate = samplerate
-    self.beta = beta
+    self.beta = 0
 
     self._torch_device = torch_device
     self._noisebands_shift = 0
@@ -139,6 +137,7 @@ class NoiseBandNet(L.LightningModule):
     self.log("recons_loss", recons_loss, prog_bar=True, logger=True)
     self.log("kld_loss", self.beta*kld_loss, prog_bar=True, logger=True)
     self.log("train_loss", loss, prog_bar=True, logger=True)
+    self.log("beta", self.beta, prog_bar=True, logger=True)
     return loss
 
   # TODO: Generate the validationa audio and add to tensorboard
