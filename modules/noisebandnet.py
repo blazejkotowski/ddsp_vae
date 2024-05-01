@@ -115,8 +115,11 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       loss: torch.Tensor[batch_size, 1], tensor of loss
     """
-    mu, logvar = self.encoder(x_audio)
-    z = self.encoder.reparametrize(mu, logvar)
+    # mu, logvar = self.encoder(x_audio)
+    # z = self.encoder.reparametrize(mu, logvar)
+
+    mu, scale = self.encoder(x_audio)
+    z, kld_loss = self.encoder.reparametrize_alter(mu, scale)
 
     # predict the amplitudes of the noise bands
     amps = self.decoder(z)
@@ -128,7 +131,7 @@ class NoiseBandNet(L.LightningModule):
     recons_loss = self.recons_loss(y_audio, x_audio)
 
     # Compute the KLD loss
-    kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
+    # kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
 
     # Compute the total loss using β parameter
     loss = recons_loss + self.beta * kld_loss

@@ -130,6 +130,24 @@ class VariationalEncoder(nn.Module):
     eps = torch.randn_like(std)
     return mu + eps*std
 
+  def reparametrize_alter(self, mean: torch.Tensor, scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Value]:
+    """
+    Reparametrize the latent variable z.
+    Args:
+      - z: torch.Tensor[batch_size, latent_size], the latent variable
+    Returns:
+      - z: torch.Tensor[batch_size, latent_size], the reparametrized latent variable
+      - kl: torch.Tensor[batch_size, 1], the KL divergence
+    """
+    std = F.softplus(scale) + 1e-4
+    var = std * std
+    logvar = torch.log(var)
+
+    z = torch.randn_like(mean) * std + mean
+    kl = (mean * mean + var - logvar - 1).sum(1).mean()
+
+    return z, kl
+
 
 class VariationalDecoder(nn.Module):
   def __init__(self, hidden_layers: int, hidden_size: int, n_bands: int, latent_size: int = 16, streaming: bool = False):
