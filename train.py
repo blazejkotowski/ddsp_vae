@@ -25,7 +25,7 @@ if __name__ == '__main__':
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds')
   parser.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu'])
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
-  parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+  parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--n_band', type=int, default=2048, help='Number of bands of the filter bank')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden layers')
@@ -39,6 +39,8 @@ if __name__ == '__main__':
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
   parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
   parser.add_argument('--beta', type=float, default=1.0, help='Beta parameter for the beta-VAE loss')
+  parser.add_argument('--warmup_start', type=int, default=150, help='Epoch to start the beta warmup')
+  parser.add_argument('--warmup_end', type=int, default=300, help='Epoch to end the beta warmup')
   config = parser.parse_args()
 
   n_signal = int(config.audio_chunk_duration * config.fs)
@@ -69,8 +71,8 @@ if __name__ == '__main__':
   # Beta parameter warmup
   beta_warmup = BetaWarmupCallback(
     beta=config.beta,
-    start_epoch=300,
-    end_epoch=1000
+    start_epoch=config.warmup_start,
+    end_epoch=config.warmup_end
   )
 
   precision = 16 if config.mixed_precision else 32
