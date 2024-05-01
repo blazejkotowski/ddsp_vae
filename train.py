@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from audio_dataset import AudioDataset
 
 from modules import NoiseBandNet
-from modules.callbacks import BetaWarmupCallback
+from modules.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
 
 DATASET_PATH = '/Users/bl/code/noisebandnet/datasets/freesound-walking/processed'
 SAMPLING_RATE = 44100
@@ -40,7 +40,8 @@ if __name__ == '__main__':
   parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
   parser.add_argument('--beta', type=float, default=1.0, help='Beta parameter for the beta-VAE loss')
   parser.add_argument('--warmup_start', type=int, default=150, help='Epoch to start the beta warmup')
-  parser.add_argument('--warmup_end', type=int, default=300, help='Epoch to end the beta warmup')
+  # parser.add_argument('--warmup_end', type=int, default=300, help='Epoch to end the beta warmup')
+  parser.add_argument('--warmup_cycle', type=int, default=50, help='Number of epochs for a full beta cycle')
   config = parser.parse_args()
 
   n_signal = int(config.audio_chunk_duration * config.fs)
@@ -69,10 +70,15 @@ if __name__ == '__main__':
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
 
   # Beta parameter warmup
-  beta_warmup = BetaWarmupCallback(
+  # beta_warmup = BetaWarmupCallback(
+  #   beta=config.beta,
+  #   start_epoch=config.warmup_start,
+  #   end_epoch=config.warmup_end
+  # )
+  beta_warmup = CyclicalBetaWarmupCallback(
     beta=config.beta,
     start_epoch=config.warmup_start,
-    end_epoch=config.warmup_end
+    cycle_duration=config.warmup_cycle
   )
 
   precision = 16 if config.mixed_precision else 32
