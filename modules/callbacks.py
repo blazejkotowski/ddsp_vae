@@ -8,7 +8,7 @@ class BetaWarmupCallback(L.Callback):
     - end_epoch: int, the epoch to end the warmup
     - beta: float, the β parameter
   """
-  def __init__(self, start_epoch: int = 15, end_epoch: int = 100, beta: float = 1.0):
+  def __init__(self, start_epoch: int = 100, end_epoch: int = 400, beta: float = 1.0):
     super().__init__()
     self.start_epoch = start_epoch
     self.end_epoch = end_epoch
