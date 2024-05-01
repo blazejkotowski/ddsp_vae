@@ -67,7 +67,11 @@ if __name__ == '__main__':
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
 
   # Beta parameter warmup
-  beta_warmup = BetaWarmupCallback(beta=config.beta)
+  beta_warmup = BetaWarmupCallback(
+    beta=config.beta,
+    start_epoch=300,
+    end_epoch=1000
+  )
 
   precision = 16 if config.mixed_precision else 32
   trainer = L.Trainer(
@@ -76,5 +80,6 @@ if __name__ == '__main__':
     accelerator=config.device,
     precision=precision,
     log_every_n_steps=4,
-    logger=tb_logger)
+    logger=tb_logger
+  )
   trainer.fit(model=nbn, train_dataloaders=train_loader)
