@@ -34,7 +34,7 @@ if __name__ == '__main__':
 
   # breakpoint()
 
-  loss = nbn._construct_loss_function()
+  # loss = nbn._construct_loss_function()
 
   output_signal = torch.FloatTensor(0)
   num_samples = config.num_samples if config.num_samples < len(dataset) else len(dataset)

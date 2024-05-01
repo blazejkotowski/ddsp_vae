@@ -64,7 +64,8 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
 
   @torch.jit.export
   def encode(self, audio: torch.Tensor):
-    latents = self.pretrained.encoder(audio.squeeze(1))
+    mu, logvar = self.pretrained.encoder(audio.squeeze(1))
+    latents = self.pretrained.encoder.reparametrize(mu, logvar)
     return latents.permute(0, 2, 1)
 
   @torch.jit.export
@@ -83,7 +84,7 @@ if __name__ == '__main__':
 
   nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True)
   nbn._trainer = L.Trainer() # ugly workaround
-  nbn.loss = None # for the torchscript
+  nbn.recons_loss = None # for the torchscript
   nbn.eval()
 
   scripted = ScriptedNoiseBandNet(nbn)
