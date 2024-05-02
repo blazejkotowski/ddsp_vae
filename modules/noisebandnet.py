@@ -10,7 +10,7 @@ import auraloss
 import math
 
 from modules.filterbank import FilterBank
-from modules.blocks import VariationalEncoder, VariationalDecoder
+from modules.blocks import Encoder, Decoder
 
 from typing import List, Tuple, Optional
 
@@ -57,7 +57,7 @@ class NoiseBandNet(L.LightningModule):
 
     # Define the neural network
     ## Encoder to extract latents from the input audio signal
-    self.encoder = VariationalEncoder(
+    self.encoder = Encoder(
       hidden_size=hidden_size,
       sample_rate=samplerate,
       latent_size=latent_size,
@@ -65,7 +65,7 @@ class NoiseBandNet(L.LightningModule):
     )
 
     ## Decoder to predict the amplitudes of the noise bands
-    self.decoder = VariationalDecoder(
+    self.decoder = Decoder(
       latent_size=latent_size,
       hidden_layers=hidden_layers,
       hidden_size=hidden_size,
