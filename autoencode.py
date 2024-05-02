@@ -13,11 +13,12 @@ if __name__ == '__main__':
   args.add_argument('--save_path', type=str, help='Directory to save the autoencoded audio')
   args.add_argument('--num_samples', type=int, default=10, help='Number of samples to autoencode')
   args.add_argument('--audio_chunk_duration', type=float, default=1, help='Duration of audio chunk in seconds')
+  args.add_argument('--device', type=str, default='mps', help='Device to use', choices=['cuda', 'cpu', 'mps'])
 
   config = args.parse_args()
 
   # Model
-  checkpoint = torch.load(config.model_checkpoint, map_location=torch.device('mps'))
+  checkpoint = torch.load(config.model_checkpoint, map_location=torch.device(config.device))
   print(f"Checkpoint hyper parameters: {checkpoint['hyper_parameters']}")
 
   nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint)
