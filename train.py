@@ -61,6 +61,7 @@ if __name__ == '__main__':
     latent_size=config.latent_size,
     encoder_ratios=config.encoder_ratios,
     decoder_ratios=config.decoder_ratios,
+    capacity=config.capacity,
     learning_rate=config.lr,
     samplerate=config.fs,
     m_filters=config.n_band,
