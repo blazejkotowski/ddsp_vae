@@ -26,10 +26,11 @@ if __name__ == '__main__':
   parser.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu'])
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-  parser.add_argument('--n_band', type=int, default=2048, help='Number of bands of the filter bank')
+  parser.add_argument('--n_band', type=int, default=512, help='Number of bands of the filter bank')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
-  parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden layers')
-  parser.add_argument('--hidden_layers', type=int, default=3, help='Number of hidden layers')
+  parser.add_argument('--encoder_ratios', type=int, nargs='+', default=[8, 4, 2], help='Capacity ratios for the encoder')
+  parser.add_argument('--decoder_ratios', type=int, nargs='+', default=[2, 4, 8], help='Capacity ratios for the decoder')
+  parser.add_argument('--capacity', type=int, default=64, help='Capacity of the model')
   parser.add_argument('--latent_size', type=int, default=16, help='Dimensionality of the latent space')
   parser.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
@@ -57,14 +58,14 @@ if __name__ == '__main__':
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
   nbn = NoiseBandNet(
+    latent_size=config.latent_size,
+    encoder_ratios=config.encoder_ratios,
+    decoder_ratios=config.decoder_ratios,
     learning_rate=config.lr,
     samplerate=config.fs,
-    hidden_size=config.hidden_size,
-    hidden_layers=config.hidden_layers,
     m_filters=config.n_band,
     resampling_factor=config.resampling_factor,
     torch_device=config.device,
-    latent_size=config.latent_size,
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)

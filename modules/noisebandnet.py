@@ -21,10 +21,11 @@ class NoiseBandNet(L.LightningModule):
 
   Args:
     - m_filters: int, the number of filters in the filterbank
-    - hidden_size: int, the size of the hidden layers of the neural network
-    - hidden_layers: int, the number of hidden layers of the neural network
     - latent_size: int, number of latent dimensions
     - samplerate : int, the sampling rate of the input signal
+    - encoder_ratios: List[int], the capacity ratios for encoder layers
+    - decoder_ratios: List[int], the capacity ratios for decoder layers
+    - capacity: int, the capacity of the model
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
     - learning_rate: float, the learning rate for the optimizer
     - torch_device: str, the device to run the model on
@@ -33,8 +34,9 @@ class NoiseBandNet(L.LightningModule):
   def __init__(self,
                m_filters: int = 2048,
                samplerate: int = 44100,
-               hidden_size: int = 128,
-               hidden_layers: int = 3,
+               encoder_ratios: List[int] = [8, 4, 2],
+               decoder_ratios: List[int] = [2, 4, 8],
+               capacity: int = 64,
                latent_size: int = 16,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
@@ -53,23 +55,25 @@ class NoiseBandNet(L.LightningModule):
     self.samplerate = samplerate
     self.beta = 0
 
+    self._encoder_ratios = encoder_ratios
+    self._decoder_ratios = decoder_ratios
+    self._capacity = capacity
     self._torch_device = torch_device
     self._noisebands_shift = 0
 
     # Define the neural network
     ## Encoder to extract latents from the input audio signal
     self.encoder = VariationalEncoder(
-      hidden_size=hidden_size,
+      layer_sizes=(np.array(encoder_ratios)*capacity).tolist(),
       sample_rate=samplerate,
       latent_size=latent_size,
-      streaming=streaming
+      streaming=streaming,
     )
 
     ## Decoder to predict the amplitudes of the noise bands
     self.decoder = VariationalDecoder(
       latent_size=latent_size,
-      hidden_layers=hidden_layers,
-      hidden_size=hidden_size,
+      layer_sizes=(np.array(decoder_ratios)*capacity).tolist(),
       n_bands=self._filterbank.noisebands.shape[0],
       streaming=streaming
     )

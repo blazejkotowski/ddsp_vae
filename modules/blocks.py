@@ -5,7 +5,7 @@ import cached_conv as cc
 import math
 from torchaudio.transforms import MFCC
 
-from typing import Tuple
+from typing import Tuple, List
 
 def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
   """
@@ -20,13 +20,24 @@ def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSe
   sizes = [in_size]
   sizes.extend(hidden_layers * [hidden_size])
 
+  return _make_sequential(sizes)
+
+
+def _make_sequential(sizes: List[int]):
+  """
+  Constructs a sequential model.
+  Args:
+  - sizes: List[int], the sizes of the layers
+  Returns:
+  - mlp: cc.CachedSequential, the sequential model
+  """
   layers = []
   for i in range(len(sizes)-1):
     layers.append(nn.Linear(sizes[i], sizes[i+1]))
     layers.append(nn.LayerNorm(sizes[i+1]))
     layers.append(nn.LeakyReLU())
 
-  return cc.CachedSequential(*layers)
+  return nn.Sequential(*layers)
 
 def _scaled_sigmoid(x: torch.Tensor):
   """
@@ -51,16 +62,17 @@ def _is_batch_size_one(x: torch.Tensor):
 
 
 class VariationalEncoder(nn.Module):
-  def __init__(self, hidden_size: int,
+  def __init__(self,
                sample_rate: int = 44100,
+               layer_sizes: List[int] = [128, 64, 32],
                latent_size: int = 16,
                downsample_factor: int = 32,
                n_mfcc: int = 30,
                streaming: bool = False):
     """
     Arguments:
-      - hidden_size: int, the size of the hidden state of the GRU
       - sample_rate: int, the sample rate of the input audio
+      - layer_sizes: List[int], the sizes of the layers in the bottleneck
       - latent_size: int, the size of the output latent space
       - resampling_factor: int, the factor by which to downsample the mfccs
       - n_mfcc : int, the number of mfccs to extract
@@ -74,10 +86,12 @@ class VariationalEncoder(nn.Module):
 
     self.normalization = nn.LayerNorm(n_mfcc)
 
-    self.gru = nn.GRU(n_mfcc, hidden_size, batch_first = True)
-    self.register_buffer('hidden_state', torch.zeros(1, 1, hidden_size), persistent=False)
+    self.gru = nn.GRU(n_mfcc, layer_sizes[0], batch_first = True)
+    self.register_buffer('hidden_state', torch.zeros(1, 1, layer_sizes[0]), persistent=False)
 
-    self.mu_logvar_out = nn.Linear(hidden_size, 2*latent_size)
+    self.bottleneck = _make_sequential(layer_sizes)
+
+    self.mu_logvar_out = nn.Linear(layer_sizes[-1], 2*latent_size)
 
 
   def forward(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -109,6 +123,9 @@ class VariationalEncoder(nn.Module):
       self.hidden_state.copy_(hx)
     else:
       x, _ = self.gru(x)
+
+    # Pass through bottleneck
+    x = self.bottleneck(x)
 
     # Pass through the dense layer
     z = self.mu_logvar_out(x)
@@ -150,27 +167,34 @@ class VariationalEncoder(nn.Module):
 
 
 class VariationalDecoder(nn.Module):
-  def __init__(self, hidden_layers: int, hidden_size: int, n_bands: int, latent_size: int = 16, streaming: bool = False):
+  def __init__(self,
+               n_bands: int = 512,
+               latent_size: int = 16,
+               layer_sizes: List[int] = [32, 64, 128],
+               output_mlp_layers: int = 3,
+               streaming: bool = False):
     """
     Arguments:
-      - hidden_layers: int, the number of hidden layers in the MLP
-      - hidden_size: int, the size of each hidden layer in the MLP
       - n_bands: int, the number of noise bands
       - latent_size: int, the size of the latent space
+      - layer_sizes: List[int], the sizes of the layers in the bottleneck
+      - output_mlp_layers: int, the number of layers in the output MLP
       - streaming: bool, streaming mode (realtime)
     """
     super().__init__()
     self.streaming = streaming
 
     # MLP mapping from the latent space
-    self.input_mlp  = _make_mlp(latent_size, hidden_layers, hidden_size)
+    self.input_bottleneck = _make_sequential([latent_size] + layer_sizes)
+
+    hidden_size = layer_sizes[-1]
 
     # Intermediate GRU layer
     self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
     self.register_buffer('hidden_state', torch.zeros(1, 1, hidden_size), persistent=False)
 
     # Intermediary 3-layer MLP
-    self.inter_mlp = _make_mlp(hidden_size, hidden_layers, hidden_size)
+    self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
 
     # Output layer predicting amplitudes
     self.output_amps = nn.Linear(hidden_size, n_bands)
@@ -186,7 +210,7 @@ class VariationalDecoder(nn.Module):
 
     """
     # Pass through the input MLP
-    x = self.input_mlp(z)
+    x = self.input_bottleneck(z)
 
     # Pass through the GRU layer
     if self.streaming and _is_batch_size_one(z):
