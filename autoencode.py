@@ -43,7 +43,7 @@ if __name__ == '__main__':
   print(f"Length of the dataset: {len(dataset)}")
   for i in samples:
     # get example from the dataset
-    x_audio = dataset[i]
+    x_audio = dataset[i].to(nbn.device)
 
     # pack audio batch
     x_audio = x_audio.unsqueeze(0)
