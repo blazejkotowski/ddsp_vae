@@ -37,6 +37,7 @@ if __name__ == '__main__':
   parser.add_argument('--warmup_start', type=int, default=150, help='Epoch to start the beta warmup')
   parser.add_argument('--warmup_end', type=int, default=300, help='Epoch to end the beta warmup')
   parser.add_argument('--kld_weight', type=float, default=0.00025, help='Weight for the KLD loss')
+  parser.add_argument('--early_stopping', type=bool, default=False, help='Use early stopping')
   # parser.add_argument('--warmup_cycle', type=int, default=50, help='Number of epochs for a full beta cycle')
   config = parser.parse_args()
 
@@ -80,11 +81,14 @@ if __name__ == '__main__':
     end_epoch=config.warmup_end
   )
 
-  early_stopping = EarlyStopping(monitor='train_loss', patience=10, mode='min')
+  training_callbacks = [beta_warmup]
+
+  if config.early_stopping:
+    training_callbacks += [EarlyStopping(monitor='train_loss', patience=10, mode='min')]
 
   precision = 16 if config.mixed_precision else 32
   trainer = L.Trainer(
-    callbacks=[beta_warmup, early_stopping],
+    callbacks=training_callbacks,
     max_epochs=config.max_epochs,
     accelerator=config.device,
     precision=precision,
