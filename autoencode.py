@@ -37,7 +37,7 @@ if __name__ == '__main__':
 
   loss = nbn._construct_loss_function()
 
-  output_signal = torch.FloatTensor(0)
+  output_signal = torch.FloatTensor(0, device = nbn.device)
   num_samples = config.num_samples if config.num_samples < len(dataset) else len(dataset)
   samples = np.random.choice(range(len(dataset)), num_samples, replace=False)
   print(f"Length of the dataset: {len(dataset)}")
@@ -59,7 +59,7 @@ if __name__ == '__main__':
     y_audio = y_audio.squeeze(0).detach()
 
     # concatenate the original and autoencoded audio with the rest of the generation
-    silence = torch.zeros(1, int(nbn.samplerate/2))
+    silence = torch.zeros(1, int(nbn.samplerate/2), device=nbn.device)
     output_signal = torch.cat((output_signal, x_audio, silence, y_audio, silence.repeat(1,3)), dim=-1)
 
   torchaudio.save(config.save_path, output_signal, nbn.samplerate)
