@@ -37,7 +37,7 @@ if __name__ == '__main__':
 
   loss = nbn._construct_loss_function()
 
-  output_signal = torch.FloatTensor(0, device = nbn.device)
+  output_signal = torch.FloatTensor(0).to(nbn.device)
   num_samples = config.num_samples if config.num_samples < len(dataset) else len(dataset)
   samples = np.random.choice(range(len(dataset)), num_samples, replace=False)
   print(f"Length of the dataset: {len(dataset)}")
