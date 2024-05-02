@@ -1,0 +1,7 @@
+auraloss
+lightning
+nn-tilde
+numpy
+tensorboard
+torch
+torchaudio
