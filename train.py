@@ -1,5 +1,6 @@
 import lightning as L
 from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 
 import torch
 torch.set_default_dtype(torch.float32)
@@ -21,7 +22,8 @@ TORCH_DEVICE = 'cpu'
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('--dataset_path', help='Directory of the training sound/sounds')
+  parser.add_argument('--dataset_path', help='Directory of the training sound/sounds', required=True)
+  parser.add_argument('--model_name', type=str, help='Name of the model', required=True)
   parser.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu'])
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
@@ -34,7 +36,6 @@ if __name__ == '__main__':
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
   parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
   parser.add_argument('--training_dir', type=str, default='training', help='Directory to save the training logs')
-  parser.add_argument('--model_name', type=str, default='noisebandnet', help='Name of the model')
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
   parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
   config = parser.parse_args()
@@ -65,5 +66,12 @@ if __name__ == '__main__':
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
 
   precision = 16 if config.mixed_precision else 32
-  trainer = L.Trainer(max_epochs=config.max_epochs, accelerator=config.device, precision=precision, log_every_n_steps=4, logger=tb_logger)
+  trainer = L.Trainer(
+    callbacks = [EarlyStopping(monitor='train_loss', patience=10, mode='min')],
+    max_epochs=config.max_epochs,
+    accelerator=config.device,
+    precision=precision,
+    log_every_n_steps=4,
+    logger=tb_logger
+  )
   trainer.fit(model=nbn, train_dataloaders=train_loader)
