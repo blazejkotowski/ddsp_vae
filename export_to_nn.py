@@ -82,10 +82,10 @@ if __name__ == '__main__':
 
   cc.use_cached_conv(config.streaming)
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True)
+  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True).to('cpu')
   nbn._trainer = L.Trainer() # ugly workaround
   nbn.recons_loss = None # for the torchscript
   nbn.eval()
 
-  scripted = ScriptedNoiseBandNet(nbn)
+  scripted = ScriptedNoiseBandNet(nbn).to('cpu')
   scripted.export_to_ts(config.output_path)

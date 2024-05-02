@@ -30,6 +30,7 @@ class NoiseBandNet(L.LightningModule):
     - learning_rate: float, the learning rate for the optimizer
     - torch_device: str, the device to run the model on
     - streaming: bool, whether to run the model in streaming mode
+    - kld_weight: float, the weight for the KLD loss
   """
   def __init__(self,
                m_filters: int = 2048,
@@ -41,7 +42,8 @@ class NoiseBandNet(L.LightningModule):
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
                torch_device: str = 'cpu',
-               streaming: bool = False):
+               streaming: bool = False,
+               kld_weight: float = 0.00025):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
@@ -54,6 +56,7 @@ class NoiseBandNet(L.LightningModule):
     self.latent_size = latent_size
     self.samplerate = samplerate
     self.beta = 0
+    self.kld_weight = kld_weight
 
     self._encoder_ratios = encoder_ratios
     self._decoder_ratios = decoder_ratios
@@ -136,7 +139,7 @@ class NoiseBandNet(L.LightningModule):
     # kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
 
     # Compute the total loss using β parameter
-    loss = recons_loss + self.beta * kld_loss
+    loss = recons_loss + self.kld_weight * self.beta * kld_loss
 
     self.log("recons_loss", recons_loss, prog_bar=True, logger=True)
     self.log("kld_loss", self.beta*kld_loss, prog_bar=True, logger=True)

@@ -1,5 +1,6 @@
 import lightning as L
 from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.callbacks import EarlyStopping
 
 import torch
 torch.set_default_dtype(torch.float32)
@@ -12,13 +13,6 @@ from audio_dataset import AudioDataset
 
 from modules import NoiseBandNet
 from modules.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
-
-DATASET_PATH = '/Users/bl/code/noisebandnet/datasets/freesound-walking/processed'
-SAMPLING_RATE = 44100
-AUDIO_CHUNK_DURATION = 1.5
-N_SIGNAL = int(SAMPLING_RATE * AUDIO_CHUNK_DURATION)
-BATCH_SIZE = 16
-TORCH_DEVICE = 'cpu'
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
@@ -42,6 +36,7 @@ if __name__ == '__main__':
   parser.add_argument('--beta', type=float, default=1.0, help='Beta parameter for the beta-VAE loss')
   parser.add_argument('--warmup_start', type=int, default=150, help='Epoch to start the beta warmup')
   parser.add_argument('--warmup_end', type=int, default=300, help='Epoch to end the beta warmup')
+  parser.add_argument('--kld_weight', type=float, default=0.00025, help='Weight for the KLD loss')
   # parser.add_argument('--warmup_cycle', type=int, default=50, help='Number of epochs for a full beta cycle')
   config = parser.parse_args()
 
@@ -67,6 +62,7 @@ if __name__ == '__main__':
     m_filters=config.n_band,
     resampling_factor=config.resampling_factor,
     torch_device=config.device,
+    kld_weight=config.kld_weight,
   )
 
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
@@ -77,15 +73,18 @@ if __name__ == '__main__':
   #   start_epoch=config.warmup_start,
   #   end_epoch=config.warmup_end
   # )
+
   beta_warmup = BetaWarmupCallback(
     beta=config.beta,
     start_epoch=config.warmup_start,
     end_epoch=config.warmup_end
   )
 
+  early_stopping = EarlyStopping(monitor='train_loss', patience=10, mode='min')
+
   precision = 16 if config.mixed_precision else 32
   trainer = L.Trainer(
-    callbacks=[beta_warmup],
+    callbacks=[beta_warmup, early_stopping],
     max_epochs=config.max_epochs,
     accelerator=config.device,
     precision=precision,

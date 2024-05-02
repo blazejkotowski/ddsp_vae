@@ -20,7 +20,7 @@ if __name__ == '__main__':
   checkpoint = torch.load(config.model_checkpoint, map_location=torch.device('mps'))
   print(f"Checkpoint hyper parameters: {checkpoint['hyper_parameters']}")
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint)
+  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint).to('cpu')
   # Evaluation mode
   nbn.eval()
 
@@ -36,13 +36,13 @@ if __name__ == '__main__':
 
   # loss = nbn._construct_loss_function()
 
-  output_signal = torch.FloatTensor(0)
+  output_signal = torch.FloatTensor(0).to('cpu')
   num_samples = config.num_samples if config.num_samples < len(dataset) else len(dataset)
   samples = np.random.choice(range(len(dataset)), num_samples, replace=False)
   print(f"Length of the dataset: {len(dataset)}")
   for i in samples:
     # get example from the dataset
-    x_audio = dataset[i]
+    x_audio = dataset[i].to('cpu')
 
     # pack audio batch
     x_audio = x_audio.unsqueeze(0)
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     y_audio = y_audio.squeeze(0).detach()
 
     # concatenate the original and autoencoded audio with the rest of the generation
-    silence = torch.zeros(1, int(nbn.samplerate/2))
+    silence = torch.zeros(1, int(nbn.samplerate/2)).to('cpu')
     output_signal = torch.cat((output_signal, x_audio, silence, y_audio, silence.repeat(1,3)), dim=-1)
 
   torchaudio.save(config.save_path, output_signal, nbn.samplerate)
