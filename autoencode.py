@@ -18,7 +18,7 @@ if __name__ == '__main__':
   config = args.parse_args()
 
   # Model
-  checkpoint = torch.load(config.model_checkpoint, map_location=torch.device(config.device))
+  checkpoint = torch.load(config.model_checkpoint, map_location=torch.device(config.device)).to(config.device)
   print(f"Checkpoint hyper parameters: {checkpoint['hyper_parameters']}")
 
   nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint)
