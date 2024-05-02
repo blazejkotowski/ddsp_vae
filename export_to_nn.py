@@ -83,7 +83,7 @@ if __name__ == '__main__':
   cc.use_cached_conv(config.streaming)
 
   nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True).to(config.device)
-  nbn._trainer = L.Trainer().to(config.device) # ugly workaround
+  nbn._trainer = L.Trainer() # ugly workaround
   nbn.loss = None # for the torchscript
   nbn.eval()
 
