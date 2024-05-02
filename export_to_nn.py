@@ -77,14 +77,15 @@ if __name__ == '__main__':
   parser.add_argument('--model_checkpoint', type=str, help='Path to the model checkpoint')
   parser.add_argument('--output_path', type=str, help='Directory to save the autoencoded audio')
   parser.add_argument('--streaming', type=bool, default=True, help='Whether to use streaming mode')
+  parser.add_argument('--device', type=str, default='cpu', help='Device to use', choices=['cuda', 'cpu', 'mps'])
   config = parser.parse_args()
 
   cc.use_cached_conv(config.streaming)
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True)
+  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True).to(config.device)
   nbn._trainer = L.Trainer() # ugly workaround
   nbn.loss = None # for the torchscript
   nbn.eval()
 
-  scripted = ScriptedNoiseBandNet(nbn)
+  scripted = ScriptedNoiseBandNet(nbn).to(config.device)
   scripted.export_to_ts(config.output_path)
