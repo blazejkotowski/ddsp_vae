@@ -1,6 +1,6 @@
 import lightning as L
 from lightning.pytorch.loggers import TensorBoardLogger
-from lightning.pytorch.callbacks import EarlyStopping
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
 import torch
 torch.set_default_dtype(torch.float32)
@@ -34,9 +34,9 @@ if __name__ == '__main__':
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
   parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
   parser.add_argument('--beta', type=float, default=1.0, help='Beta parameter for the beta-VAE loss')
-  parser.add_argument('--warmup_start', type=int, default=150, help='Epoch to start the beta warmup')
-  parser.add_argument('--warmup_end', type=int, default=300, help='Epoch to end the beta warmup')
-  parser.add_argument('--kld_weight', type=float, default=0.00025, help='Weight for the KLD loss')
+  parser.add_argument('--warmup_start', type=int, default=300, help='Step to start the beta warmup')
+  parser.add_argument('--warmup_end', type=int, default=1300, help='Step to end the beta warmup')
+  parser.add_argument('--kld_weight', type=float, default=0.001, help='Weight for the KLD loss')
   parser.add_argument('--early_stopping', type=bool, default=False, help='Use early stopping')
   # parser.add_argument('--warmup_cycle', type=int, default=50, help='Number of epochs for a full beta cycle')
   config = parser.parse_args()
@@ -75,16 +75,26 @@ if __name__ == '__main__':
   #   end_epoch=config.warmup_end
   # )
 
+  # Warming up beta parameter
   beta_warmup = BetaWarmupCallback(
     beta=config.beta,
-    start_epoch=config.warmup_start,
-    end_epoch=config.warmup_end
+    start_steps=config.warmup_start,
+    end_steps=config.warmup_end
   )
 
   training_callbacks = [beta_warmup]
 
+  # Early stopping
   if config.early_stopping:
     training_callbacks += [EarlyStopping(monitor='train_loss', patience=10, mode='min')]
+
+  # Define the checkpoint callback
+  checkpoint_callback = ModelCheckpoint(
+      filename='best',
+      monitor='train_loss',
+      mode='min',
+  )
+  training_callbacks += [checkpoint_callback]
 
   precision = 16 if config.mixed_precision else 32
   trainer = L.Trainer(

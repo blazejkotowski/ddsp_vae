@@ -4,24 +4,24 @@ class BetaWarmupCallback(L.Callback):
   """
   A callback that warms up the β parameter of a β-VAE loss function.
   Arguments:
-    - start_epoch: int, the epoch to start the warmup
-    - end_epoch: int, the epoch to end the warmup
+    - start_steps: int, the step to start the warmup
+    - end_steps: int, the step to end the warmup
     - beta: float, the β parameter
   """
-  def __init__(self, start_epoch: int = 100, end_epoch: int = 300, beta: float = 1.0):
+  def __init__(self, start_steps: int = 300, end_steps: int = 1300, beta: float = 1.0):
     super().__init__()
-    self.start_epoch = start_epoch
-    self.end_epoch = end_epoch
+    self.start_steps = start_steps
+    self.end_steps = end_steps
     self.beta = beta
 
   def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
-    current_epoch = trainer.current_epoch
-    if current_epoch < self.start_epoch:
+    current_step = trainer.global_step
+    if current_step < self.start_steps:
       beta = 0.0
-    elif current_epoch >= self.end_epoch:
+    elif current_step >= self.end_steps:
       beta = self.beta
     else:
-      beta = self.beta * (current_epoch - self.start_epoch) / (self.end_epoch - self.start_epoch)
+      beta = self.beta * (current_step - self.start_steps) / (self.end_steps - self.start_steps)
 
     pl_module.beta = beta
 
