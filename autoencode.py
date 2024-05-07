@@ -5,19 +5,38 @@ import torch
 import torchaudio
 import numpy as np
 import torch.nn.functional as F
+import os
+
+
+def _find_checkpoint(model_directory: str) -> str:
+  """Finds the last checkpoint recursively looking in the model directory"""
+  checkpoints = []
+  for root, _, files in os.walk(model_directory):
+    for file in files:
+      if file.endswith('.ckpt'):
+        checkpoints.append(os.path.join(root, file))
+
+  if not checkpoints:
+    raise ValueError(f"No checkpoints found in {model_directory}")
+
+  return max(checkpoints, key=os.path.getctime)
+
 
 if __name__ == '__main__':
   args = argparse.ArgumentParser()
-  args.add_argument('--model_checkpoint', type=str, help='Path to the model checkpoint')
+  args.add_argument('--model_directory', type=str, help='Path to the model training')
   args.add_argument('--dataset_path', type=str, help='Directory of the training sound/sounds')
-  args.add_argument('--save_path', type=str, help='Directory to save the autoencoded audio')
+  args.add_argument('--save_path', type=str, default='validations', help='Directory to save the autoencoded audio')
   args.add_argument('--num_samples', type=int, default=10, help='Number of samples to autoencode')
-  args.add_argument('--audio_chunk_duration', type=float, default=1, help='Duration of audio chunk in seconds')
+  args.add_argument('--audio_chunk_duration', type=float, default=3, help='Duration of audio chunk in seconds')
+  args.add_argument('--device', type=str, default='mps', help='Device to use', choices=['cuda', 'cpu', 'mps'])
 
   config = args.parse_args()
 
+  checkpoint_path = _find_checkpoint(config.model_directory)
+
   # Model
-  checkpoint = torch.load(config.model_checkpoint, map_location=torch.device('mps'))
+  checkpoint = torch.load(checkpoint_path, map_location=torch.device(config.device))
   print(f"Checkpoint hyper parameters: {checkpoint['hyper_parameters']}")
 
   nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint).to('cpu')

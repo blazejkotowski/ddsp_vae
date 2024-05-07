@@ -1,0 +1,14 @@
+#N canvas 549 208 361 215 12;
+#X obj 21 81 inlet~;
+#X obj 107 81 inlet~;
+#X obj 193 81 inlet;
+#X obj 21 105 expr~ $v1*(1-$v3)+$v2*$v3;
+#X obj 21 129 outlet~;
+#X text 19 62 sig1;
+#X text 106 63 sig2;
+#X text 192 62 xfade value;
+#X text 85 129 Cross-fading;
+#X connect 0 0 3 0;
+#X connect 1 0 3 1;
+#X connect 2 0 3 2;
+#X connect 3 0 4 0;

@@ -1,0 +1,9 @@
+#N canvas 531 153 450 431 12;
+#X obj 135 126 model~ bvae-ybalferran;
+#X obj 136 249 dac~;
+#X obj 135 46 osc~ 0.1;
+#X obj 135 70 *~ 4;
+#X connect 0 0 1 0;
+#X connect 0 0 1 1;
+#X connect 2 0 3 0;
+#X connect 3 0 0 0;
