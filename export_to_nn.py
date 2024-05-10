@@ -4,6 +4,8 @@ import torch
 import lightning as L
 import cached_conv as cc
 
+from autoencode import _find_checkpoint
+
 from modules import NoiseBandNet
 
 torch.enable_grad(False)
@@ -75,14 +77,16 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('--model_checkpoint', type=str, help='Path to the model checkpoint')
+  parser.add_argument('--model_directory', type=str, help='Path to the model training')
   parser.add_argument('--output_path', type=str, help='Directory to save the autoencoded audio')
   parser.add_argument('--streaming', type=bool, default=True, help='Whether to use streaming mode')
   config = parser.parse_args()
 
   cc.use_cached_conv(config.streaming)
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint, strict=False, streaming=True).to('cpu')
+  checkpoint_path = _find_checkpoint(config.model_directory)
+
+  nbn = NoiseBandNet.load_from_checkpoint(checkpoint_path, strict=False, streaming=True).to('cpu')
   nbn._trainer = L.Trainer() # ugly workaround
   nbn.recons_loss = None # for the torchscript
   nbn.eval()

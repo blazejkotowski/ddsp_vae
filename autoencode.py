@@ -39,7 +39,7 @@ if __name__ == '__main__':
   checkpoint = torch.load(checkpoint_path, map_location=torch.device(config.device))
   print(f"Checkpoint hyper parameters: {checkpoint['hyper_parameters']}")
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint).to('cpu')
+  nbn = NoiseBandNet.load_from_checkpoint(checkpoint_path).to('cpu')
   # Evaluation mode
   nbn.eval()
 
