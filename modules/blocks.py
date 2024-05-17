@@ -169,6 +169,7 @@ class VariationalEncoder(nn.Module):
 class VariationalDecoder(nn.Module):
   def __init__(self,
                n_bands: int = 512,
+               n_sines: int = 500,
                latent_size: int = 16,
                layer_sizes: List[int] = [32, 64, 128],
                output_mlp_layers: int = 3,
@@ -196,8 +197,8 @@ class VariationalDecoder(nn.Module):
     # Intermediary 3-layer MLP
     self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
 
-    # Output layer predicting amplitudes
-    self.output_amps = nn.Linear(hidden_size, n_bands)
+    # Output layer predicting noiseband amplitudes, and sine frequencies and amplitudes
+    self.output_amps = nn.Linear(hidden_size, n_bands + n_sines * 2)
 
 
   def forward(self, z: torch.Tensor):
@@ -223,6 +224,10 @@ class VariationalDecoder(nn.Module):
     x = self.inter_mlp(x)
 
     # Pass through the output layer
-    amplitudes = _scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1)
+    output = _scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1)
 
-    return amplitudes
+    noiseband_amps = output[..., :self.n_bands]
+    sine_freqs = output[..., self.n_bands:self.n_bands + self.n_sines]
+    sine_amps = output[..., self.n_bands + self.n_sines:]
+
+    return noiseband_amps, sine_freqs, sine_amps
