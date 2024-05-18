@@ -21,6 +21,7 @@ if __name__ == '__main__':
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--n_band', type=int, default=512, help='Number of bands of the filter bank')
+  parser.add_argument('--n_sines', type=int, default=500, help='Number of sines to synthesise')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--encoder_ratios', type=int, nargs='+', default=[8, 4, 2], help='Capacity ratios for the encoder')
   parser.add_argument('--decoder_ratios', type=int, nargs='+', default=[2, 4, 8], help='Capacity ratios for the decoder')
@@ -61,6 +62,7 @@ if __name__ == '__main__':
     learning_rate=config.lr,
     samplerate=config.fs,
     m_filters=config.n_band,
+    n_sines=config.n_sines,
     resampling_factor=config.resampling_factor,
     torch_device=config.device,
     kld_weight=config.kld_weight,
