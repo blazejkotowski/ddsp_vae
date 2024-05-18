@@ -183,6 +183,9 @@ class VariationalDecoder(nn.Module):
       - streaming: bool, streaming mode (realtime)
     """
     super().__init__()
+
+    self.n_bands = n_bands
+    self.n_sines = n_sines
     self.streaming = streaming
 
     # MLP mapping from the latent space
@@ -198,17 +201,18 @@ class VariationalDecoder(nn.Module):
     self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
 
     # Output layer predicting noiseband amplitudes, and sine frequencies and amplitudes
-    self.output_amps = nn.Linear(hidden_size, n_bands + n_sines * 2)
+    self.output_params = nn.Linear(hidden_size, n_bands + n_sines * 2)
 
 
-  def forward(self, z: torch.Tensor):
+  def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Forward pass of the decoder.
     Arguments:
       - z: torch.Tensor, the latent space tensor
     Returns:
-      - amplitudes: torch.Tensor, the predicted amplitudes [batch_size, n_bands, n_signal]
-
+      - noiseband_amps: torch.Tensor, the predicted noiseband amplitudes
+      - sine_freqs: torch.Tensor, the predicted sine frequencies
+      - sine_amps: torch.Tensor, the predicted sine amplitudes
     """
     # Pass through the input MLP
     x = self.input_bottleneck(z)
@@ -224,10 +228,10 @@ class VariationalDecoder(nn.Module):
     x = self.inter_mlp(x)
 
     # Pass through the output layer
-    output = _scaled_sigmoid(self.output_amps(x)).permute(0, 2, 1)
+    output = _scaled_sigmoid(self.output_params(x))
 
-    noiseband_amps = output[..., :self.n_bands]
-    sine_freqs = output[..., self.n_bands:self.n_bands + self.n_sines]
-    sine_amps = output[..., self.n_bands + self.n_sines:]
+    noiseband_amps = output[..., :self.n_bands].permute(0, 2, 1)
+    sine_freqs = output[..., self.n_bands:self.n_bands + self.n_sines].permute(0, 2, 1)
+    sine_amps = output[..., self.n_bands + self.n_sines:].permute(0, 2, 1)
 
     return noiseband_amps, sine_freqs, sine_amps

@@ -58,7 +58,7 @@ class NoiseBandNet(L.LightningModule):
     )
 
     # Sine synthesiser
-    self._sine_synth = SineSynth(fs=samplerate, n_sines=n_sines)
+    self._sine_synth = SineSynth(fs=samplerate, n_sines=n_sines, streaming=streaming)
 
     self.resampling_factor = resampling_factor
     self.latent_size = latent_size
@@ -105,13 +105,13 @@ class NoiseBandNet(L.LightningModule):
     """
     # encode the audio signal
     mu, logvar = self.encoder(audio)
-    z = self.encoder.reparametrize(mu, logvar)
+    z, _ = self.encoder.reparametrize_alter(mu, logvar)
 
     # predict the amplitudes of the noise bands
-    amps = self.decoder(z)
+    synth_params = self.decoder(z)
 
     # synthesize the signal
-    signal = self._synthesize(amps)
+    signal = self._synthesize(*synth_params)
     return signal
 
   def training_step(self, x_audio: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -163,6 +163,21 @@ class NoiseBandNet(L.LightningModule):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
 
+  def _synthesize(self, noiseband_amps: torch.Tensor, sine_freqs: torch.Tensor, sine_amps: torch.Tensor) -> torch.Tensor:
+    """
+    Synthesizes a signal from the predicted amplitudes and the baked noise bands.
+    Args:
+      - noiseband_amps: torch.Tensor[batch_size, n_bands, sig_length], the predicted amplitudes of the noise bands
+      - sine_freqs: torch.Tensor[batch_size, n_sines, sig_length], the predicted frequencies of the sines
+      - sine_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the sines
+    Returns:
+      - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
+    """
+    noisebands = self._synthesize_noisebands(noiseband_amps)
+    sines = self._sine_synth.generate(sine_freqs, sine_amps)
+    return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
+
+
   def _synthesize_noisebands(self, amplitudes: torch.Tensor) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
@@ -194,20 +209,6 @@ class NoiseBandNet(L.LightningModule):
     # synthesize the signal
     signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
     return signal
-
-  def _synthesize(self, noiseband_amps: torch.Tensor, sine_freqs: torch.Tensor, sine_amps: torch.Tensor) -> torch.Tensor:
-    """
-    Synthesizes a signal from the predicted amplitudes and the baked noise bands.
-    Args:
-      - noiseband_amps: torch.Tensor[batch_size, n_bands, sig_length], the predicted amplitudes of the noise bands
-      - sine_freqs: torch.Tensor[batch_size, n_sines, sig_length], the predicted frequencies of the sines
-      - sine_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the sines
-    Returns:
-      - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
-    """
-    noisebands = self._synthesize_noisebands(noiseband_amps)
-    sines = self._sine_synth.generate(sine_freqs, sine_amps)
-    return torch.sum(torch.vstack([noisebands, sines]), dim=1, keepdim=True)
 
 
   @property
