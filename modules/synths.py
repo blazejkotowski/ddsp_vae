@@ -61,15 +61,15 @@ class SineSynth(nn.Module):
       self.phases.copy_(phases[: ,: , -1] % (2 * math.pi))
 
     # Generate and sum the sinewaves
-    signal = multiply_and_sum_tensors(amplitudes, torch.sin(phases))
-    # signal = torch.sum(amplitudes * torch.sin(phases), dim=1, keepdim=True)
+    # signal = multiply_and_sum_tensors(amplitudes, torch.sin(phases))
+    signal = torch.sum(amplitudes * torch.sin(phases), dim=1, keepdim=True)
     return signal
 
 
   def _test(self, batch_size: int = 1, n_changes: int = 5, duration: float = 0.5, audiofile: str = 'sinewaves.wav'):
     # Generate a test signal of randomised sine frequencies and amplitudes
     freqs = torch.rand(batch_size, self.n_sines, n_changes) * 5000 + 40
-    amps = torch.rand(batch_size, self.n_sines, n_changes) / self.n_sines
+    amps = torch.rand(batch_size, self.n_sines, n_changes) / self.n_sinesgi
 
     freqs = F.interpolate(freqs, scale_factor=self.fs*duration/n_changes/self.resampling_factor, mode='nearest')
     amps = F.interpolate(amps, scale_factor=self.fs*duration/n_changes/self.resampling_factor, mode='nearest')
