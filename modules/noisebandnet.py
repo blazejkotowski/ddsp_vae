@@ -86,7 +86,8 @@ class NoiseBandNet(L.LightningModule):
       latent_size=latent_size,
       layer_sizes=(np.array(decoder_ratios)*capacity).tolist(),
       n_bands=self._filterbank.noisebands.shape[0],
-      streaming=streaming
+      streaming=streaming,
+      n_sines=n_sines,
     )
 
     # Define the loss
