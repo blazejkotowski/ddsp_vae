@@ -1,8 +1,6 @@
 import torch
 import math
 
-from typing import Callable
-
 def multiply_and_sum_tensors(ten_a: torch.Tensor, ten_b: torch.Tensor, n_chunks: int = 4) -> torch.Tensor:
   """
   Optimization of torch.sum(a * b, dim=1, keepdim=True)
@@ -29,18 +27,3 @@ def multiply_and_sum_tensors(ten_a: torch.Tensor, ten_b: torch.Tensor, n_chunks:
     c += torch.sum(a_chunk * b_chunk, dim=1, keepdim=True)
 
   return c
-
-def apply_method_in_place(tensor: torch.Tensor, method: Callable, n_chunks: int = 4) -> torch.Tensor:
-  """
-  Optimization of array method optimized for saving memory at cost of speed.
-
-  Arguments:
-    - tensor: torch.Tensor, the tensor to apply the method to
-    - method: Callable, the method to apply to the tensor
-    - n_chunks: int, the number of chunks to split the tensor into
-  """
-  size = math.ceil(tensor.shape[-1] / n_chunks)
-  for i in range(n_chunks):
-    tensor[..., i*size:(i+1)*size] = method(tensor[..., i*size:(i+1)*size])
-
-  return tensor

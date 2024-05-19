@@ -4,8 +4,7 @@ import math
 import torchaudio
 import torch.nn.functional as F
 
-from modules.memory_optimizations import multiply_and_sum_tensors, apply_method_in_place
-
+from modules.memory_optimizations import multiply_and_sum_tensors
 class SineSynth(nn.Module):
   """
   Mixture of sinweaves synthesiser.
@@ -62,10 +61,8 @@ class SineSynth(nn.Module):
       self.phases.copy_(phases[: ,: , -1] % (2 * math.pi))
 
     # Generate and sum the sinewaves
-    sines = apply_method_in_place(phases, torch.sin)
-    signal = multiply_and_sum_tensors(amplitudes, sines)
+    signal = multiply_and_sum_tensors(amplitudes, torch.sin(phases))
     # signal = torch.sum(amplitudes * torch.sin(phases), dim=1, keepdim=True)
-    # breakpoint()
     return signal
 
 
