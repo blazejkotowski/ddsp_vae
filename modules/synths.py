@@ -49,9 +49,9 @@ class SineSynth(nn.Module):
     # Calculate the phase increments
     omegas = frequencies * 2 * math.pi / self.fs
 
-    # Calculate the phases at points
-    # phases = torch.cumsum(omegas, dim=-1) % (2 * math.pi)
-    phases = cumsum(omegas) % (2 * math.pi)
+    # Calculate the phases at points, in place
+    phases = omegas.cumsum_(dim=-1)
+    phases = phases % (2 * math.pi)
 
     if self.streaming:
       # Shift the phases by the last phase from last generation
