@@ -14,8 +14,6 @@ from modules.blocks import VariationalEncoder, VariationalDecoder
 
 from modules.synths import SineSynth
 
-from modules.memory_optimizations import multiply_and_sum_tensors
-
 from typing import List
 
 class NoiseBandNet(L.LightningModule):
@@ -209,16 +207,8 @@ class NoiseBandNet(L.LightningModule):
     # Save the noisebands shift for the next iteration
     self._noisebands_shift = (self._noisebands_shift + upsampled_amplitudes.shape[-1]) % self._noisebands.shape[-1]
 
-    # synthesize the signal
-    # Equivalent of: signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
+    # Synthesize the signal
     signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
-    # This is optimization splitting the multiplication into multiple chunks to save memory at cost of speed
-    # signal = multiply_and_sum_tensors(upsampled_amplitudes, looped_bands)
-    # n_chunk = 10
-    # signal = torch.zeros(1, 1, upsampled_amplitudes.shape[-1])
-    # for amps, bands in zip(upsampled_amplitudes.chunk(n_chunk, dim=1), looped_bands.chunk(n_chunk)):
-    #   chunk = torch.sum(amps * bands, dim=1, keepdim=True)
-    #   signal += chunk
     return signal
 
 
