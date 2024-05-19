@@ -4,6 +4,8 @@ import math
 import torchaudio
 import torch.nn.functional as F
 
+from modules.utils import multiply_and_sum_tensors
+
 class SineSynth(nn.Module):
   """
   Mixture of sinweaves synthesiser.
@@ -37,31 +39,31 @@ class SineSynth(nn.Module):
     batch_size = frequencies.shape[0]
 
     # We only need to initialise phases buffer if we are in streaming mode
-    if self.streaming and self.phases is None:
+    if self.streaming and (self.phases is None or self.phases.shape[0] != batch_size):
       self.phases = torch.zeros(batch_size, self.n_sines)
 
     # Upsample from the internal sampling rate to the target sampling rate
-    frequencies = F.interpolate(frequencies, scale_factor=self.resampling_factor, mode='linear')
-    amplitudes = F.interpolate(amplitudes, scale_factor=self.resampling_factor, mode='linear')
+    frequencies = F.interpolate(frequencies, scale_factor=float(self.resampling_factor), mode='linear')
+    amplitudes = F.interpolate(amplitudes, scale_factor=float(self.resampling_factor), mode='linear')
 
     # Calculate the phase increments
     omegas = frequencies * 2 * math.pi / self.fs
 
     # Calculate the phases at points
-    phases = torch.cumsum(omegas, axis=-1)
+    phases = torch.cumsum(omegas, dim=-1) % (2 * math.pi)
 
     if self.streaming:
-      # Shift the phases by the last phase from last generatioin
+      # Shift the phases by the last phase from last generation
+      # breakpoint()
       phases = (phases.permute(2, 0, 1) + self.phases).permute(1, 2, 0)
 
       # Copy the last phases for next iteration
-      self.phases.copy_(phases[: ,: , -1] % 2 * math.pi)
+      self.phases.copy_(phases[: ,: , -1] % (2 * math.pi))
 
-    # Generate the sinewaves
-    sines = amplitudes * torch.sin(phases)
-
-    # Sum the sinewaves
-    signal = torch.sum(sines, dim=1, keepdim=True)
+    # Generate and sum the sinewaves
+    signal = multiply_and_sum_tensors(amplitudes, torch.sin(phases))
+    # signal = torch.sum(amplitudes * torch.sin(phases), dim=1, keepdim=True)
+    # breakpoint()
     return signal
 
 
@@ -70,10 +72,15 @@ class SineSynth(nn.Module):
     freqs = torch.rand(batch_size, self.n_sines, n_changes) * 5000 + 40
     amps = torch.rand(batch_size, self.n_sines, n_changes) / self.n_sines
 
-    freqs = F.interpolate(freqs, scale_factor=self.fs*duration*n_changes/self.resampling_factor, mode='nearest')
-    amps = F.interpolate(amps, scale_factor=self.fs*duration*n_changes/self.resampling_factor, mode='nearest')
+    freqs = F.interpolate(freqs, scale_factor=self.fs*duration/n_changes/self.resampling_factor, mode='nearest')
+    amps = F.interpolate(amps, scale_factor=self.fs*duration/n_changes/self.resampling_factor, mode='nearest')
 
-    signal = self.generate(freqs, amps)
+    freq_chunks = freqs.chunk(100, dim=-1)
+    amp_chunks = amps.chunk(100, dim=-1)
+
+    signal = torch.Tensor()
+    for freq, amp in zip(freq_chunks, amp_chunks):
+      signal = torch.cat((signal, self.generate(freq, amp)), dim=-1)
 
     batch_size = signal.shape[0]
     for i in range(batch_size):

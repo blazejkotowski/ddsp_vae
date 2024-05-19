@@ -5,7 +5,7 @@ import cached_conv as cc
 import math
 from torchaudio.transforms import MFCC
 
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
   """
@@ -147,7 +147,7 @@ class VariationalEncoder(nn.Module):
     eps = torch.randn_like(std)
     return mu + eps*std
 
-  def reparametrize_alter(self, mean: torch.Tensor, scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Value]:
+  def reparametrize_alter(self, mean: torch.Tensor, scale: torch.Tensor):
     """
     Reparametrize the latent variable z.
     Args:
