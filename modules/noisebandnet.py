@@ -14,7 +14,7 @@ from modules.blocks import VariationalEncoder, VariationalDecoder
 
 from modules.synths import SineSynth
 
-from modules.utils import multiply_and_sum_tensors
+from modules.memory_optimizations import multiply_and_sum_tensors
 
 from typing import List
 

@@ -4,7 +4,7 @@ import math
 import torchaudio
 import torch.nn.functional as F
 
-from modules.utils import multiply_and_sum_tensors
+from modules.memory_optimizations import multiply_and_sum_tensors, cumsum
 
 class SineSynth(nn.Module):
   """
@@ -50,7 +50,8 @@ class SineSynth(nn.Module):
     omegas = frequencies * 2 * math.pi / self.fs
 
     # Calculate the phases at points
-    phases = torch.cumsum(omegas, dim=-1) % (2 * math.pi)
+    # phases = torch.cumsum(omegas, dim=-1) % (2 * math.pi)
+    phases = cumsum(omegas) % (2 * math.pi)
 
     if self.streaming:
       # Shift the phases by the last phase from last generation
