@@ -4,7 +4,7 @@ import math
 import torchaudio
 import torch.nn.functional as F
 
-from modules.memory_optimizations import multiply_and_sum_tensors, cumsum
+from modules.memory_optimizations import multiply_and_sum_tensors
 
 class SineSynth(nn.Module):
   """
