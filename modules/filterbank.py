@@ -11,7 +11,7 @@ class FilterBank(nn.Module):
   The bank consists of a lowpass filter, a specified number of bandpass filters and a highpass filter.
 
   Args:
-    - m_filters: int, the number of filters in the bank
+    - n_filters: int, the number of filters in the bank
     - lin_filters_ratio: float, the ratio of linear filters covering the lower frequency range
     - lin_filters_cutoff_ratio: float, the ratio of the lower frequency range covered by the linear filters
     - lowpass_cutoff: float, the cutoff frequency of the lowpass filter
@@ -21,7 +21,7 @@ class FilterBank(nn.Module):
   """
 
   def __init__(self,
-               m_filters: int = 2048,
+               n_filters: int = 2048,
                lin_filters_ratio: float = 1/4,
                lin_filters_cutoff_ratio: float = 1/8,
                lowpass_cutoff: float = 20,
@@ -29,7 +29,7 @@ class FilterBank(nn.Module):
                stopband_attenuation: float = 50.0,
                fs: int = 44100):
     super().__init__()
-    self._m_filters = m_filters
+    self._n_filters = n_filters - 2 # lowpass and highpass filters are added in default at the limits of the spectrum
     self._stopband_attenuation = stopband_attenuation
     self._fs = fs
     self._transition_width = transition_width
@@ -38,6 +38,7 @@ class FilterBank(nn.Module):
     self._lowpass_cutoff = lowpass_cutoff
 
     self._filters = self._build_filterbank()
+
     self.noisebands = torch.from_numpy(np.array(self._bake_noisebands()))
 
 
@@ -49,13 +50,13 @@ class FilterBank(nn.Module):
     nyqfreq = self._fs/2
 
     # Compute the linear filter bands
-    linear_filters_number = int(self._m_filters * self._lin_filters_ratio)
+    linear_filters_number = int(self._n_filters * self._lin_filters_ratio)
     linear_cutoff_freq = int(self._lin_filters_cutoff_ratio * nyqfreq)
     lin_boundaries = np.linspace(self._lowpass_cutoff, linear_cutoff_freq, linear_filters_number+1)
 
     # Compute the logarithmic filter bands, omitting the last boundary since it's present in the linear bands
     # endpoint set to False since we don't want the nyquist frequency to be included in bandpass filters
-    log_filters_number = self._m_filters - linear_filters_number
+    log_filters_number = self._n_filters - linear_filters_number
     log_boundaries = np.geomspace(linear_cutoff_freq, nyqfreq, log_filters_number+1, endpoint=False)[1:]
 
     # Create the bands

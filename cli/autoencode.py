@@ -1,5 +1,5 @@
-from modules import NoiseBandNet
-from audio_dataset import AudioDataset
+from modules import DDSP, AudioDataset
+
 import argparse
 import torch
 import torchaudio
@@ -39,21 +39,21 @@ if __name__ == '__main__':
   checkpoint = torch.load(checkpoint_path, map_location=torch.device(config.device))
   print(f"Checkpoint hyper parameters: {checkpoint['hyper_parameters']}")
 
-  nbn = NoiseBandNet.load_from_checkpoint(checkpoint_path).to('cpu')
+  ddsp = DDSP.load_from_checkpoint(checkpoint_path).to('cpu')
   # Evaluation mode
-  nbn.eval()
+  ddsp.eval()
 
 
   # Dataset
   dataset = AudioDataset(
     dataset_path=config.dataset_path,
-    n_signal=int(nbn.samplerate*config.audio_chunk_duration),
-    sampling_rate=nbn.samplerate,
+    n_signal=int(ddsp.fs*config.audio_chunk_duration),
+    sampling_rate=ddsp.fs,
   )
 
   # breakpoint()
 
-  # loss = nbn._construct_loss_function()
+  # loss = ddsp._construct_loss_function()
 
   output_signal = torch.FloatTensor(0).to('cpu')
   num_samples = config.num_samples if config.num_samples < len(dataset) else len(dataset)
@@ -67,7 +67,7 @@ if __name__ == '__main__':
     x_audio = x_audio.unsqueeze(0)
 
     # forward the control params to generate the audio
-    y_audio = nbn(x_audio)
+    y_audio = ddsp(x_audio)
 
     # calculate the loss
     # loss_val = loss(y_audio, x_audio).item()
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     y_audio = y_audio.squeeze(0).detach()
 
     # concatenate the original and autoencoded audio with the rest of the generation
-    silence = torch.zeros(1, int(nbn.samplerate/2)).to('cpu')
+    silence = torch.zeros(1, int(ddsp.fs/2)).to('cpu')
     output_signal = torch.cat((output_signal, x_audio, silence, y_audio, silence.repeat(1,3)), dim=-1)
 
-  torchaudio.save(config.save_path, output_signal, nbn.samplerate)
+  torchaudio.save(config.save_path, output_signal, ddsp.fs)

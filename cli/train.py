@@ -9,9 +9,9 @@ import argparse
 import os
 
 from torch.utils.data import DataLoader
-from audio_dataset import AudioDataset
+from modules import AudioDataset
 
-from modules import NoiseBandNet
+from modules import DDSP
 from modules.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
 
 if __name__ == '__main__':
@@ -31,7 +31,7 @@ if __name__ == '__main__':
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
   parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
   parser.add_argument('--training_dir', type=str, default='training', help='Directory to save the training logs')
-  parser.add_argument('--model_name', type=str, default='noisebandnet', help='Name of the model')
+  parser.add_argument('--model_name', type=str, default='ddsp', help='Name of the model')
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')
   parser.add_argument('--control_params', type=str, nargs='+', default=['loudness', 'centroid'], help='Control parameters to use, possible: aloudness, centroid, flatness')
   parser.add_argument('--beta', type=float, default=1.0, help='Beta parameter for the beta-VAE loss')
@@ -54,7 +54,7 @@ if __name__ == '__main__':
 
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
-  nbn = NoiseBandNet(
+  ddsp = DDSP(
     latent_size=config.latent_size,
     encoder_ratios=config.encoder_ratios,
     decoder_ratios=config.decoder_ratios,
@@ -107,4 +107,4 @@ if __name__ == '__main__':
     log_every_n_steps=4,
     logger=tb_logger
   )
-  trainer.fit(model=nbn, train_dataloaders=train_loader)
+  trainer.fit(model=ddsp, train_dataloaders=train_loader)

@@ -12,71 +12,60 @@ import math
 from modules.filterbank import FilterBank
 from modules.blocks import VariationalEncoder, VariationalDecoder
 
-from modules.synths import SineSynth
+from modules.synths import SineSynth, NoiseBandSynth
 
 from typing import List
 
-class NoiseBandNet(L.LightningModule):
+class DDSP(L.LightningModule):
   """
   A neural network that learns how to resynthesise signal, predicting amplitudes of
   precalculated, loopable noise bands.
 
   Args:
-    - m_filters: int, the number of filters in the filterbank
+    - n_filters: int, the number of filters in the filterbank
+    - n_sines: int, the number of sines to synthesise
     - latent_size: int, number of latent dimensions
-    - samplerate : int, the sampling rate of the input signal
+    - fs : int, the sampling rate of the input signal
     - encoder_ratios: List[int], the capacity ratios for encoder layers
     - decoder_ratios: List[int], the capacity ratios for decoder layers
     - capacity: int, the capacity of the model
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
     - learning_rate: float, the learning rate for the optimizer
-    - torch_device: str, the device to run the model on
     - streaming: bool, whether to run the model in streaming mode
     - kld_weight: float, the weight for the KLD loss
   """
   def __init__(self,
-               m_filters: int = 2048,
+               n_filters: int = 2048,
                n_sines: int = 500,
-               samplerate: int = 44100,
+               latent_size: int = 16,
+               fs: int = 44100,
                encoder_ratios: List[int] = [8, 4, 2],
                decoder_ratios: List[int] = [2, 4, 8],
                capacity: int = 64,
-               latent_size: int = 16,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
-               torch_device: str = 'cpu',
                streaming: bool = False,
                kld_weight: float = 0.00025):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
+    self.fs = fs
 
-    # Noise bands filterbank
-    self._filterbank = FilterBank(
-      m_filters=m_filters,
-      fs=samplerate
-    )
+    # Noisebands synthesiser
+    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)
 
     # Sine synthesiser
-    self._sine_synth = SineSynth(fs=samplerate, n_sines=n_sines, streaming=streaming)
+    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=resampling_factor, streaming=streaming)
 
-    self.resampling_factor = resampling_factor
-    self.latent_size = latent_size
-    self.samplerate = samplerate
-    self.beta = 0
-    self.kld_weight = kld_weight
-
-    self._encoder_ratios = encoder_ratios
-    self._decoder_ratios = decoder_ratios
-    self._capacity = capacity
-    self._torch_device = torch_device
-    self._noisebands_shift = 0
+    # ELBO regularization params
+    self._beta = 0
+    self._kld_weight = kld_weight
 
     # Define the neural network
     ## Encoder to extract latents from the input audio signal
     self.encoder = VariationalEncoder(
       layer_sizes=(np.array(encoder_ratios)*capacity).tolist(),
-      sample_rate=samplerate,
+      sample_rate=fs,
       latent_size=latent_size,
       streaming=streaming,
     )
@@ -85,14 +74,15 @@ class NoiseBandNet(L.LightningModule):
     self.decoder = VariationalDecoder(
       latent_size=latent_size,
       layer_sizes=(np.array(decoder_ratios)*capacity).tolist(),
-      n_bands=self._filterbank.noisebands.shape[0],
+      n_bands=n_filters,
       streaming=streaming,
       n_sines=n_sines,
     )
 
     # Define the loss
-    self.recons_loss = self._construct_mrstft_loss()
+    self._recons_loss = self._construct_mrstft_loss()
 
+    # Learning rate
     self._learning_rate = learning_rate
 
 
@@ -142,18 +132,18 @@ class NoiseBandNet(L.LightningModule):
     y_audio = self._synthesize(*synth_params)
 
     # Compute the reconstruction loss
-    recons_loss = self.recons_loss(y_audio, x_audio)
+    recons_loss = self._recons_loss(y_audio, x_audio)
 
     # Compute the KLD loss
     # kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
 
     # Compute the total loss using β parameter
-    loss = recons_loss + self.kld_weight * self.beta * kld_loss
+    loss = recons_loss + self._kld_weight * self._beta * kld_loss
 
     self.log("recons_loss", recons_loss, prog_bar=True, logger=True)
-    self.log("kld_loss", self.beta*kld_loss, prog_bar=True, logger=True)
+    self.log("kld_loss", self._beta*kld_loss, prog_bar=True, logger=True)
     self.log("train_loss", loss, prog_bar=True, logger=True)
-    self.log("beta", self.beta, prog_bar=True, logger=True)
+    self.log("beta", self._beta, prog_bar=True, logger=True)
     return loss
 
   # TODO: Generate the validationa audio and add to tensorboard
@@ -174,48 +164,9 @@ class NoiseBandNet(L.LightningModule):
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
-    noisebands = self._synthesize_noisebands(noiseband_amps)
-    sines = self._sine_synth.generate(sine_freqs, sine_amps)
+    sines = self._sine_synth(sine_freqs, sine_amps)
+    noisebands = self._noisebands_synth(noiseband_amps)
     return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
-
-
-  def _synthesize_noisebands(self, amplitudes: torch.Tensor) -> torch.Tensor:
-    """
-    Synthesizes a signal from the predicted amplitudes and the baked noise bands.
-    Args:
-      - amplitudes: torch.Tensor[batch_size, n_bands, sig_length], the predicted amplitudes of the noise bands
-    Returns:
-      - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
-    """
-    # upsample the amplitudes
-    upsampled_amplitudes = F.interpolate(amplitudes, scale_factor=float(self.resampling_factor), mode='linear')
-
-    # shift the noisebands to maintain the continuity of the noise signal
-    noisebands = torch.roll(self._noisebands, shifts=-self._noisebands_shift, dims=-1)
-
-    if self.training:
-      # roll the noisebands randomly to avoid overfitting to the noise values
-      # check whether model is training
-      noisebands = torch.roll(noisebands, shifts=int(torch.randint(0, noisebands.shape[-1], size=(1,))), dims=-1)
-
-    # fit the noisebands into the mplitudes
-    repeats = math.ceil(upsampled_amplitudes.shape[-1] / noisebands.shape[-1])
-    looped_bands = noisebands.repeat(1, repeats) # repeat
-    looped_bands = looped_bands[:, :upsampled_amplitudes.shape[-1]] # trim
-    looped_bands = looped_bands.to(upsampled_amplitudes.device, dtype=torch.float32)
-
-    # Save the noisebands shift for the next iteration
-    self._noisebands_shift = (self._noisebands_shift + upsampled_amplitudes.shape[-1]) % self._noisebands.shape[-1]
-
-    # Synthesize the signal
-    signal = torch.sum(upsampled_amplitudes * looped_bands, dim=1, keepdim=True)
-    return signal
-
-
-  @property
-  def _noisebands(self):
-    """Delegate the noisebands to the filterbank object."""
-    return self._filterbank.noisebands
 
 
   @torch.jit.ignore

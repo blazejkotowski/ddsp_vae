@@ -4,16 +4,16 @@ import torch
 import lightning as L
 import cached_conv as cc
 
-from autoencode import _find_checkpoint
+from cli.autoencode import _find_checkpoint
 
-from modules import NoiseBandNet
+from modules import DDSP
 
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
 
-class ScriptedNoiseBandNet(nn_tilde.Module):
+class ScriptedDDSP(nn_tilde.Module):
   def __init__(self,
-               pretrained: NoiseBandNet):
+               pretrained: DDSP):
     super().__init__()
 
     self.pretrained = pretrained
@@ -76,9 +76,9 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
     return self.pretrained(audio.squeeze(1))
 
 
-class ONNXNoiseBandNet(torch.nn.Module):
+class ONNXDDSP(torch.nn.Module):
   def __init__(self,
-               pretrained: NoiseBandNet):
+               pretrained: DDSP):
     super().__init__()
 
     self.pretrained = pretrained
@@ -114,17 +114,17 @@ if __name__ == '__main__':
   if format not in ['ts', 'onnx']:
     raise ValueError(f'Invalid format: {format}, supported formats are: ts, onnx')
 
-  nbn = NoiseBandNet.load_from_checkpoint(checkpoint_path, strict=False, streaming=True).to('cpu')
+  ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=True).to('cpu')
   if format == 'onnx':
-    nbn.eval()
-    scripted = ONNXNoiseBandNet(nbn).to('cpu')
+    ddsp.eval()
+    scripted = ONNXDDSP(ddsp).to('cpu')
     torch.onnx.dynamo_export(
       scripted,
       torch.zeros(1, 1, 2**14),
     ).save(config.output_path)
   elif format == 'ts':
-    nbn._trainer = L.Trainer() # ugly workaround
-    nbn.recons_loss = None # for the torchscript
-    nbn.eval()
-    scripted = ScriptedNoiseBandNet(nbn).to('cpu')
+    ddsp._trainer = L.Trainer() # ugly workaround
+    ddsp.recons_loss = None # for the torchscript
+    ddsp.eval()
+    scripted = ScriptedDDSP(ddsp).to('cpu')
     scripted.export_to_ts(config.output_path)

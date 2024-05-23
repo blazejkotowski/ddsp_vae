@@ -5,7 +5,7 @@ import cached_conv as cc
 import math
 from torchaudio.transforms import MFCC
 
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 
 def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
   """

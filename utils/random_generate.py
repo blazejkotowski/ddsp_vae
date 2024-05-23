@@ -8,9 +8,9 @@ import time
 
 import torch.nn.functional as F
 
-from modules import NoiseBandNet
+from modules import DDSP
 
-from typing import List, Tuple
+from typing import List
 
 def random_walk(n) -> np.ndarray:
     current_value = random.uniform(0, 1)
@@ -63,7 +63,7 @@ def random_control_params(audio_duration: float,
     fs: int
       Sampling rate
     resmapling_factor: int
-      Resampling factor of the NoiseBandNet
+      Resampling factor of the DDSP
     stereo: bool
       Whether to generate control params for 2 channels
 
@@ -120,16 +120,16 @@ if __name__ == '__main__':
   control_params[2] = control_params[2]*0
 
 
-  nbn = NoiseBandNet.load_from_checkpoint(config.model_checkpoint)
+  ddsp = DDSP.load_from_checkpoint(config.model_checkpoint)
                                           # n_control_params=3) # this is for ybalferran model
-  nbn.eval()
+  ddsp.eval()
   torch.set_grad_enabled(False)
 
   start_time = time.time()
   # Generate audio in chunks
   # # Calculations for downsampeld signal
   n_signal = control_params[0].shape[-1]
-  n_noiseband = int(nbn._noisebands.shape[-1] // nbn.resampling_factor)
+  n_noiseband = int(ddsp._noisebands.shape[-1] // ddsp.resampling_factor)
   n_chunk = n_noiseband # Actual lenght of loopable noiseband
 
   n_chunk = int(1024 / 32) # Arbitrary
@@ -144,7 +144,7 @@ if __name__ == '__main__':
     else:
       current_control = [c[:, :, i*n_chunk:(i+1)*n_chunk] for c in control_params]
 
-    audio_chunk, previous_hidden = nbn(current_control, previous_hidden)
+    audio_chunk, previous_hidden = ddsp(current_control, previous_hidden)
     audio_chunk = audio_chunk.squeeze(1).detach()
 
     # Concatenate with previous audio
@@ -154,7 +154,7 @@ if __name__ == '__main__':
       audio = torch.cat([audio, audio_chunk], dim=-1)
 
   # # Generate all at once
-  # audio, hidden = nbn(control_params)
+  # audio, hidden = ddsp(control_params)
   # audio = audio.squeeze(1).detach()
 
   elapsed_time = time.time() - start_time
