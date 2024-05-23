@@ -79,8 +79,8 @@ class DDSP(L.LightningModule):
     self._learning_rate = learning_rate
 
     # Validation inputs and outputs
-    self._validation_inputs = []
-    self._validation_outputs = []
+    self._last_validation_in = None
+    self._last_validation_out = None
     self._validation_index = 1
 
 
@@ -128,8 +128,8 @@ class DDSP(L.LightningModule):
 
     self.log("val_loss", loss, prog_bar=False, logger=True)
 
-    self._validation_inputs.append(x_audio)
-    self._validation_outputs.append(y_audio.squeeze(1))
+    self._last_validation_in = x_audio
+    self._last_validation_out = y_audio.squeeze(1)
 
     return y_audio
 
@@ -180,15 +180,12 @@ class DDSP(L.LightningModule):
 
     audio = torch.FloatTensor(0, device=device) # Concatenated audio
     silence = torch.zeros(1, int(self.fs/2), device=device) # 0.5s silence
-    for inputs, outputs in zip(self._validation_inputs, self._validation_outputs):
-      for input, output in zip(inputs, outputs):
-        audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
+    for input, output in zip(self._last_validation_in, self._last_validation_out):
+      audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
 
     self.logger.experiment.add_audio("audio_validation", audio, self._validation_index, self.fs)
 
     self._validation_index += 1
-    self._validation_inputs.clear()
-    self._validation_outputs.clear()
 
 
   def configure_optimizers(self):
