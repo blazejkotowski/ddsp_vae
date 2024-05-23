@@ -7,7 +7,7 @@ import auraloss
 from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.synths import SineSynth, NoiseBandSynth
 
-from typing import List
+from typing import List, Tuple, Dict
 
 class DDSP(L.LightningModule):
   """
@@ -78,6 +78,11 @@ class DDSP(L.LightningModule):
     # Learning rate
     self._learning_rate = learning_rate
 
+    # Validation inputs and outputs
+    self._validation_inputs = []
+    self._validation_outputs = []
+    self._validation_index = 1
+
 
   def forward(self, audio: torch.Tensor) -> torch.Tensor:
     """
@@ -87,16 +92,9 @@ class DDSP(L.LightningModule):
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
-    # encode the audio signal
-    mu, logvar = self.encoder(audio)
-    z, _ = self.encoder.reparametrize(mu, logvar)
-
-    # predict the amplitudes of the noise bands
-    synth_params = self.decoder(z)
-
-    # synthesize the signal
-    signal = self._synthesize(*synth_params)
+    signal, _ = self._autoencode(audio)
     return signal
+
 
   def training_step(self, x_audio: torch.Tensor, batch_idx: int) -> torch.Tensor:
     """
@@ -112,38 +110,84 @@ class DDSP(L.LightningModule):
     Returns:
       loss: torch.Tensor[batch_size, 1], tensor of loss
     """
-    # mu, logvar = self.encoder(x_audio)
-    # z = self.encoder.reparametrize(mu, logvar)
+    _, losses = self._autoencode(x_audio)
 
+    self.log("recons_loss", losses["recons_loss"], prog_bar=True, logger=True)
+    self.log("kld_loss", losses["kld_loss"], prog_bar=True, logger=True)
+    self.log("train_loss", losses["loss"], prog_bar=True, logger=True)
+    self.log("beta", self._beta, prog_bar=True, logger=True)
+
+    return losses["loss"]
+
+
+  def validation_step(self, x_audio: torch.Tensor, batch_idx: int) -> torch.Tensor:
+    """Compute the loss for validation data"""
+    y_audio, losses = self._autoencode(x_audio)
+
+    loss = losses["recons_loss"]
+
+    self.log("val_loss", loss, prog_bar=False, logger=True)
+
+    self._validation_inputs.append(x_audio)
+    self._validation_outputs.append(y_audio.squeeze(1))
+
+    return y_audio
+
+
+  def _autoencode(self, x_audio: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Autoencode the audio signal
+    Args:
+      - x_audio: torch.Tensor[batch_size, n_signal], the input audio signal
+    Returns:
+      - y_audio: torch.Tensor[batch_size, n_signal], the autoencoded audio signal
+      - losses: Dict[str, torch.Tensor], the losses computed during the autoencoding
+    """
+    # Encode the audio signal
     mu, scale = self.encoder(x_audio)
+
+    # Reparametrization trick
     z, kld_loss = self.encoder.reparametrize(mu, scale)
 
-    # predict the amplitudes of the noise bands
+    # Predict the parameters of the synthesiser
     synth_params = self.decoder(z)
 
-    # synthesize the signal
+    # Synthesize the output signal
     y_audio = self._synthesize(*synth_params)
 
     # Compute the reconstruction loss
     recons_loss = self._recons_loss(y_audio, x_audio)
 
-    # Compute the KLD loss
-    # kld_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
-
     # Compute the total loss using β parameter
     loss = recons_loss + self._kld_weight * self._beta * kld_loss
 
-    self.log("recons_loss", recons_loss, prog_bar=True, logger=True)
-    self.log("kld_loss", self._beta*kld_loss, prog_bar=True, logger=True)
-    self.log("train_loss", loss, prog_bar=True, logger=True)
-    self.log("beta", self._beta, prog_bar=True, logger=True)
-    return loss
+    # Construct losses dictionary
+    losses = {
+      "recons_loss": recons_loss,
+      "kld_loss": kld_loss,
+      "loss": loss
+    }
 
-  # TODO: Generate the validationa audio and add to tensorboard
-  # def on_validation_epoch_end(self, )
+    return y_audio, losses
+
+
+  def on_validation_epoch_end(self):
+    """At the end of the validation epoch, log the validation audio"""
+    audio = torch.FloatTensor(0) # Concatenated audio
+    silence = torch.zeros(1, int(self.fs/2)) # 0.5s silence
+    for inputs, outputs in zip(self._validation_inputs, self._validation_outputs):
+      for input, output in zip(inputs, outputs):
+        audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
+
+    self.logger.experiment.add_audio("audio_validation", audio, self._validation_index, self.fs)
+
+    self._validation_index += 1
+    self._validation_inputs.clear()
+    self._validation_outputs.clear()
 
 
   def configure_optimizers(self):
+    """Configure the optimizer for the model"""
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
 
@@ -164,9 +208,7 @@ class DDSP(L.LightningModule):
 
   @torch.jit.ignore
   def _construct_mrstft_loss(self):
-    """
-    Construct the loss function for the model: a multi-resolution STFT loss
-    """
+    """Construct the loss function for the model: a multi-resolution STFT loss"""
     fft_sizes = np.array([8192, 4096, 2048, 1024, 512, 128, 32])
     return auraloss.freq.MultiResolutionSTFTLoss(fft_sizes=[8192, 4096, 2048, 1024, 512, 128, 32],
                                                 hop_sizes=fft_sizes//4,

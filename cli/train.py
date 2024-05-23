@@ -8,7 +8,7 @@ torch.set_default_dtype(torch.float32)
 import argparse
 import os
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from ddsp import DDSP, AudioDataset
 from ddsp.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
 
@@ -44,14 +44,19 @@ if __name__ == '__main__':
 
   os.makedirs(os.path.join(config.training_dir, config.model_name), exist_ok=True)
 
+  # Load Dataset
   dataset = AudioDataset(
     dataset_path=config.dataset_path,
     n_signal=n_signal,
     sampling_rate=config.fs,
   )
 
-  train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
+  # Split into training and validation
+  train_set, val_set = random_split(dataset, [0.8, 0.2])
+  train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
+  val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=True)
 
+  # Core model
   ddsp = DDSP(
     n_filters=config.n_band,
     n_sines=config.n_sines,
@@ -65,14 +70,10 @@ if __name__ == '__main__':
     kld_weight=config.kld_weight,
   )
 
+  # Tensorboard
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
 
-  # Beta parameter warmup
-  # beta_warmup = BetaWarmupCallback(
-  #   beta=config.beta,
-  #   start_epoch=config.warmup_start,
-  #   end_epoch=config.warmup_end
-  # )
+  training_callbacks = []
 
   # Warming up beta parameter
   beta_warmup = BetaWarmupCallback(
@@ -80,8 +81,7 @@ if __name__ == '__main__':
     start_steps=config.warmup_start,
     end_steps=config.warmup_end
   )
-
-  training_callbacks = [beta_warmup]
+  training_callbacks.append(beta_warmup)
 
   # Early stopping
   if config.early_stopping:
@@ -93,8 +93,9 @@ if __name__ == '__main__':
       monitor='train_loss',
       mode='min',
   )
-  training_callbacks += [checkpoint_callback]
+  training_callbacks.append(checkpoint_callback)
 
+  # Configure the trainer
   precision = 16 if config.mixed_precision else 32
   trainer = L.Trainer(
     callbacks=training_callbacks,
@@ -104,4 +105,6 @@ if __name__ == '__main__':
     log_every_n_steps=4,
     logger=tb_logger
   )
-  trainer.fit(model=ddsp, train_dataloaders=train_loader)
+
+  # Start training
+  trainer.fit(model=ddsp, train_dataloaders=train_loader, val_dataloaders=val_loader)
