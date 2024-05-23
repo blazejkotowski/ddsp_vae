@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import auraloss
 
-from ddsp.blocks import VariationalEncoder, VariationalDecoder
+from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.synths import SineSynth, NoiseBandSynth
 
 from typing import List
@@ -44,10 +44,7 @@ class DDSP(L.LightningModule):
     self.save_hyperparameters()
     self.fs = fs
 
-    # Add the lowpass and the highpass filters to the number
-    # n_filters += 2
-
-    # Noisebands synthesiser
+    # Noisebands synthesiserg
     self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)
 
     # Sine synthesiser
@@ -67,7 +64,7 @@ class DDSP(L.LightningModule):
     )
 
     ## Decoder to predict the amplitudes of the noise bands
-    self.decoder = VariationalDecoder(
+    self.decoder = Decoder(
       latent_size=latent_size,
       layer_sizes=(np.array(decoder_ratios)*capacity).tolist(),
       n_bands=n_filters,
@@ -92,7 +89,7 @@ class DDSP(L.LightningModule):
     """
     # encode the audio signal
     mu, logvar = self.encoder(audio)
-    z, _ = self.encoder.reparametrize_alter(mu, logvar)
+    z, _ = self.encoder.reparametrize(mu, logvar)
 
     # predict the amplitudes of the noise bands
     synth_params = self.decoder(z)
@@ -119,7 +116,7 @@ class DDSP(L.LightningModule):
     # z = self.encoder.reparametrize(mu, logvar)
 
     mu, scale = self.encoder(x_audio)
-    z, kld_loss = self.encoder.reparametrize_alter(mu, scale)
+    z, kld_loss = self.encoder.reparametrize(mu, scale)
 
     # predict the amplitudes of the noise bands
     synth_params = self.decoder(z)

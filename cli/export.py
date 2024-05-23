@@ -68,7 +68,7 @@ class ScriptedDDSP(nn_tilde.Module):
   def encode(self, audio: torch.Tensor):
     mu, scale = self.pretrained.encoder(audio.squeeze(1))
     # latents = self.pretrained.encoder.reparametrize(mu, logvar)
-    latents, _ = self.pretrained.encoder.reparametrize_alter(mu, scale)
+    latents, _ = self.pretrained.encoder.reparametrize(mu, scale)
     return latents.permute(0, 2, 1)
 
   @torch.jit.export
@@ -90,8 +90,7 @@ class ONNXDDSP(torch.nn.Module):
 
   def encode(self, audio: torch.Tensor):
     mu, scale = self.pretrained.encoder(audio.squeeze(1))
-    # latents = self.pretrained.encoder.reparametrize(mu, logvar)
-    latents, _ = self.pretrained.encoder.reparametrize_alter(mu, scale)
+    latents, _ = self.pretrained.encoder.reparametrize(mu, scale)
     return latents.permute(0, 2, 1)
 
   def forward(self, audio: torch.Tensor):

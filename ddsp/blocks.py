@@ -87,7 +87,7 @@ class VariationalEncoder(nn.Module):
     self.normalization = nn.LayerNorm(n_mfcc)
 
     self.gru = nn.GRU(n_mfcc, layer_sizes[0], batch_first = True)
-    self.register_buffer('hidden_state', torch.zeros(1, 1, layer_sizes[0]), persistent=False)
+    self.register_buffer('_hidden_state', torch.zeros(1, 1, layer_sizes[0]), persistent=False)
 
     self.bottleneck = _make_sequential(layer_sizes)
 
@@ -119,8 +119,8 @@ class VariationalEncoder(nn.Module):
 
     # Pass through the GRU layer
     if self.streaming and _is_batch_size_one(x):
-      x, hx = self.gru(x, self.hidden_state)
-      self.hidden_state.copy_(hx)
+      x, hx = self.gru(x, self._hidden_state)
+      self._hidden_state.copy_(hx)
     else:
       x, _ = self.gru(x)
 
@@ -134,20 +134,7 @@ class VariationalEncoder(nn.Module):
 
     return mu, logvar
 
-  def reparametrize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-    """
-    Reparametrization trick.
-    Arguments:
-      - mu: torch.Tensor, the mean of the latent space
-      - logvar: torch.Tensor, the log variance of the latent space
-    Returns:
-      - z: torch.Tensor, the latent space tensor
-    """
-    std = torch.exp(0.5*logvar)
-    eps = torch.randn_like(std)
-    return mu + eps*std
-
-  def reparametrize_alter(self, mean: torch.Tensor, scale: torch.Tensor):
+  def reparametrize(self, mean: torch.Tensor, scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Reparametrize the latent variable z.
     Args:
@@ -166,7 +153,7 @@ class VariationalEncoder(nn.Module):
     return z, kl
 
 
-class VariationalDecoder(nn.Module):
+class Decoder(nn.Module):
   def __init__(self,
                n_bands: int = 512,
                n_sines: int = 500,
@@ -195,7 +182,7 @@ class VariationalDecoder(nn.Module):
 
     # Intermediate GRU layer
     self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
-    self.register_buffer('hidden_state', torch.zeros(1, 1, hidden_size), persistent=False)
+    self.register_buffer('_hidden_state', torch.zeros(1, 1, hidden_size), persistent=False)
 
     # Intermediary 3-layer MLP
     self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
@@ -219,8 +206,8 @@ class VariationalDecoder(nn.Module):
 
     # Pass through the GRU layer
     if self.streaming and _is_batch_size_one(z):
-      x, hx = self.gru(x, self.hidden_state)
-      self.hidden_state.copy_(hx)
+      x, hx = self.gru(x, self._hidden_state)
+      self._hidden_state.copy_(hx)
     else:
       x, _ = self.gru(x)
 
