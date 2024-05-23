@@ -183,6 +183,7 @@ class DDSP(L.LightningModule):
     for input, output in zip(self._last_validation_in, self._last_validation_out):
       audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
 
+    audio = audio.clip_(-1, 1) # Clip the audio to stay in range
     self.logger.experiment.add_audio("audio_validation", audio, self._validation_index, self.fs)
 
     self._validation_index += 1
