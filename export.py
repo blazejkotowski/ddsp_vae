@@ -66,13 +66,37 @@ class ScriptedNoiseBandNet(nn_tilde.Module):
 
   @torch.jit.export
   def encode(self, audio: torch.Tensor):
-    mu, logvar = self.pretrained.encoder(audio.squeeze(1))
-    latents = self.pretrained.encoder.reparametrize(mu, logvar)
+    mu, scale = self.pretrained.encoder(audio.squeeze(1))
+    # latents = self.pretrained.encoder.reparametrize(mu, logvar)
+    latents, _ = self.pretrained.encoder.reparametrize_alter(mu, scale)
     return latents.permute(0, 2, 1)
 
   @torch.jit.export
   def forward(self, audio: torch.Tensor):
     return self.pretrained(audio.squeeze(1))
+
+
+class ONNXNoiseBandNet(torch.nn.Module):
+  def __init__(self,
+               pretrained: NoiseBandNet):
+    super().__init__()
+
+    self.pretrained = pretrained
+
+  def decode(self, latents: torch.Tensor):
+    synth_params = self.pretrained.decoder(latents.permute(0, 2, 1))
+    audio = self.pretrained._synthesize(*synth_params)
+    return audio
+
+  def encode(self, audio: torch.Tensor):
+    mu, scale = self.pretrained.encoder(audio.squeeze(1))
+    # latents = self.pretrained.encoder.reparametrize(mu, logvar)
+    latents, _ = self.pretrained.encoder.reparametrize_alter(mu, scale)
+    return latents.permute(0, 2, 1)
+
+  def forward(self, audio: torch.Tensor):
+    return self.pretrained(audio.squeeze(1))
+
 
 
 if __name__ == '__main__':
@@ -86,10 +110,21 @@ if __name__ == '__main__':
 
   checkpoint_path = _find_checkpoint(config.model_directory)
 
-  nbn = NoiseBandNet.load_from_checkpoint(checkpoint_path, strict=False, streaming=True).to('cpu')
-  nbn._trainer = L.Trainer() # ugly workaround
-  nbn.recons_loss = None # for the torchscript
-  nbn.eval()
+  format = config.output_path.split('.')[-1]
+  if format not in ['ts', 'onnx']:
+    raise ValueError(f'Invalid format: {format}, supported formats are: ts, onnx')
 
-  scripted = ScriptedNoiseBandNet(nbn).to('cpu')
-  scripted.export_to_ts(config.output_path)
+  nbn = NoiseBandNet.load_from_checkpoint(checkpoint_path, strict=False, streaming=True).to('cpu')
+  if format == 'onnx':
+    nbn.eval()
+    scripted = ONNXNoiseBandNet(nbn).to('cpu')
+    torch.onnx.dynamo_export(
+      scripted,
+      torch.zeros(1, 1, 2**14),
+    ).save(config.output_path)
+  elif format == 'ts':
+    nbn._trainer = L.Trainer() # ugly workaround
+    nbn.recons_loss = None # for the torchscript
+    nbn.eval()
+    scripted = ScriptedNoiseBandNet(nbn).to('cpu')
+    scripted.export_to_ts(config.output_path)
