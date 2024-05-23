@@ -4,9 +4,9 @@ import torch
 import lightning as L
 import cached_conv as cc
 
-from cli.autoencode import _find_checkpoint
+from utils import find_checkpoint
 
-from modules import DDSP
+from ddsp import DDSP
 
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
@@ -108,7 +108,7 @@ if __name__ == '__main__':
 
   cc.use_cached_conv(config.streaming)
 
-  checkpoint_path = _find_checkpoint(config.model_directory)
+  checkpoint_path = find_checkpoint(config.model_directory)
 
   format = config.output_path.split('.')[-1]
   if format not in ['ts', 'onnx']:

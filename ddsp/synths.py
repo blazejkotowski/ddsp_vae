@@ -4,7 +4,7 @@ import math
 import torchaudio
 import torch.nn.functional as F
 
-from modules.filterbank import FilterBank
+from ddsp.filterbank import FilterBank
 
 class BaseSynth(nn.Module):
   """

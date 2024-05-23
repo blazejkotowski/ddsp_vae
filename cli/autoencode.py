@@ -1,26 +1,11 @@
-from modules import DDSP, AudioDataset
+from ddsp import DDSP, AudioDataset
 
 import argparse
 import torch
 import torchaudio
 import numpy as np
-import torch.nn.functional as F
-import os
 
-
-def _find_checkpoint(model_directory: str) -> str:
-  """Finds the last checkpoint recursively looking in the model directory"""
-  checkpoints = []
-  for root, _, files in os.walk(model_directory):
-    for file in files:
-      if file.endswith('.ckpt'):
-        checkpoints.append(os.path.join(root, file))
-
-  if not checkpoints:
-    raise ValueError(f"No checkpoints found in {model_directory}")
-
-  return max(checkpoints, key=os.path.getctime)
-
+from utils import find_checkpoint
 
 if __name__ == '__main__':
   args = argparse.ArgumentParser()
@@ -33,7 +18,7 @@ if __name__ == '__main__':
 
   config = args.parse_args()
 
-  checkpoint_path = _find_checkpoint(config.model_directory)
+  checkpoint_path = find_checkpoint(config.model_directory)
 
   # Model
   checkpoint = torch.load(checkpoint_path, map_location=torch.device(config.device))

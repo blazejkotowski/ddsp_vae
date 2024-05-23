@@ -1,18 +1,11 @@
 import lightning as L
-from lightning.pytorch.utilities import grad_norm
-
 import torch
-from torch import nn
-import torch.nn.functional as F
 
 import numpy as np
 import auraloss
-import math
 
-from modules.filterbank import FilterBank
-from modules.blocks import VariationalEncoder, VariationalDecoder
-
-from modules.synths import SineSynth, NoiseBandSynth
+from ddsp.blocks import VariationalEncoder, VariationalDecoder
+from ddsp.synths import SineSynth, NoiseBandSynth
 
 from typing import List
 
@@ -44,12 +37,15 @@ class DDSP(L.LightningModule):
                capacity: int = 64,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
-               streaming: bool = False,
-               kld_weight: float = 0.00025):
+               kld_weight: float = 0.00025,
+               streaming: bool = False):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
     self.fs = fs
+
+    # Add the lowpass and the highpass filters to the number
+    # n_filters += 2
 
     # Noisebands synthesiser
     self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)

@@ -8,7 +8,7 @@ import time
 
 import torch.nn.functional as F
 
-from modules import DDSP
+from ddsp import DDSP
 
 from typing import List
 

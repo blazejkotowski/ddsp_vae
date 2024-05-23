@@ -9,10 +9,8 @@ import argparse
 import os
 
 from torch.utils.data import DataLoader
-from modules import AudioDataset
-
-from modules import DDSP
-from modules.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
+from ddsp import DDSP, AudioDataset
+from ddsp.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
@@ -55,16 +53,15 @@ if __name__ == '__main__':
   train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
   ddsp = DDSP(
+    n_filters=config.n_band,
+    n_sines=config.n_sines,
     latent_size=config.latent_size,
+    fs=config.fs,
     encoder_ratios=config.encoder_ratios,
     decoder_ratios=config.decoder_ratios,
     capacity=config.capacity,
-    learning_rate=config.lr,
-    samplerate=config.fs,
-    m_filters=config.n_band,
-    n_sines=config.n_sines,
     resampling_factor=config.resampling_factor,
-    torch_device=config.device,
+    learning_rate=config.lr,
     kld_weight=config.kld_weight,
   )
 
