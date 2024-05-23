@@ -178,8 +178,8 @@ class DDSP(L.LightningModule):
     else:
       device = 'cpu'
 
-    audio = torch.FloatTensor(0, device=device) # Concatenated audio
-    silence = torch.zeros(1, int(self.fs/2), device=device) # 0.5s silence
+    audio = torch.FloatTensor(0).to(device) # Concatenated audio
+    silence = torch.zeros(1, int(self.fs/2)).to(device) # 0.5s silence
     for input, output in zip(self._last_validation_in, self._last_validation_out):
       audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
 
