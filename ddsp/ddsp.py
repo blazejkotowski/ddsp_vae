@@ -173,8 +173,8 @@ class DDSP(L.LightningModule):
 
   def on_validation_epoch_end(self):
     """At the end of the validation epoch, log the validation audio"""
-    if len(self._validation_outputs) > 0:
-      device = self._validation_outputs[0].device
+    if self._last_validation_out is not None:
+      device = self._last_validation_out.device
     else:
       device = 'cpu'
 
