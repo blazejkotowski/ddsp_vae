@@ -173,8 +173,13 @@ class DDSP(L.LightningModule):
 
   def on_validation_epoch_end(self):
     """At the end of the validation epoch, log the validation audio"""
-    audio = torch.FloatTensor(0) # Concatenated audio
-    silence = torch.zeros(1, int(self.fs/2)) # 0.5s silence
+    if len(self._validation_outputs) > 0:
+      device = self._validation_outputs[0].device
+    else:
+      device = 'cpu'
+
+    audio = torch.FloatTensor(0, device=device) # Concatenated audio
+    silence = torch.zeros(1, int(self.fs/2), device=device) # 0.5s silence
     for inputs, outputs in zip(self._validation_inputs, self._validation_outputs):
       for input, output in zip(inputs, outputs):
         audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)

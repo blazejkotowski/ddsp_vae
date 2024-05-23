@@ -54,7 +54,7 @@ if __name__ == '__main__':
   # Split into training and validation
   train_set, val_set = random_split(dataset, [0.8, 0.2])
   train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
-  val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=True)
+  val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=False)
 
   # Core model
   ddsp = DDSP(
