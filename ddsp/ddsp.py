@@ -128,8 +128,9 @@ class DDSP(L.LightningModule):
 
     self.log("val_loss", loss, prog_bar=False, logger=True)
 
-    self._last_validation_in = x_audio
-    self._last_validation_out = y_audio.squeeze(1)
+    if self._last_validation_in is None:
+      self._last_validation_in = x_audio
+      self._last_validation_out = y_audio.squeeze(1)
 
     return y_audio
 
@@ -186,6 +187,8 @@ class DDSP(L.LightningModule):
     audio = audio.clip_(-1, 1) # Clip the audio to stay in range
     self.logger.experiment.add_audio("audio_validation", audio, self._validation_index, self.fs)
 
+    self._last_validation_in = None
+    self._last_validation_out = None
     self._validation_index += 1
 
 

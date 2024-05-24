@@ -1,7 +1,7 @@
 
 import os
 
-def find_checkpoint(model_directory: str) -> str:
+def find_checkpoint(model_directory: str, return_none: bool = False) -> str:
   """Finds the last checkpoint recursively looking in the model directory"""
   checkpoints = []
   for root, _, files in os.walk(model_directory):
@@ -10,6 +10,9 @@ def find_checkpoint(model_directory: str) -> str:
         checkpoints.append(os.path.join(root, file))
 
   if not checkpoints:
-    raise ValueError(f"No checkpoints found in {model_directory}")
+    if return_none:
+      return None
+    else:
+      raise ValueError(f"No checkpoints found in {model_directory}")
 
   return max(checkpoints, key=os.path.getctime)

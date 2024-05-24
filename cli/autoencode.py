@@ -5,7 +5,7 @@ import torch
 import torchaudio
 import numpy as np
 
-from utils import find_checkpoint
+from ddsp.utils import find_checkpoint
 
 if __name__ == '__main__':
   args = argparse.ArgumentParser()

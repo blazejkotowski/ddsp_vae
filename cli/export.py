@@ -4,7 +4,7 @@ import torch
 import lightning as L
 import cached_conv as cc
 
-from utils import find_checkpoint
+from ddsp.utils import find_checkpoint
 
 from ddsp import DDSP
 

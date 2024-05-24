@@ -11,6 +11,7 @@ import os
 from torch.utils.data import DataLoader, random_split
 from ddsp import DDSP, AudioDataset
 from ddsp.callbacks import BetaWarmupCallback, CyclicalBetaWarmupCallback
+from ddsp.utils import find_checkpoint
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
@@ -37,12 +38,15 @@ if __name__ == '__main__':
   parser.add_argument('--warmup_end', type=int, default=1300, help='Step to end the beta warmup')
   parser.add_argument('--kld_weight', type=float, default=0.001, help='Weight for the KLD loss')
   parser.add_argument('--early_stopping', type=bool, default=False, help='Use early stopping')
+  parser.add_argument('--force_restart', type=bool, default=False, help='Force restart the training. Ignore the existing checkpoint.')
   # parser.add_argument('--warmup_cycle', type=int, default=50, help='Number of epochs for a full beta cycle')
   config = parser.parse_args()
 
   n_signal = int(config.audio_chunk_duration * config.fs)
 
-  os.makedirs(os.path.join(config.training_dir, config.model_name), exist_ok=True)
+  # Create training directory
+  training_path = os.path.join(config.training_dir, config.model_name)
+  os.makedirs(training_path, exist_ok=True)
 
   # Load Dataset
   dataset = AudioDataset(
@@ -52,7 +56,7 @@ if __name__ == '__main__':
   )
 
   # Split into training and validation
-  train_set, val_set = random_split(dataset, [0.8, 0.2])
+  train_set, val_set = random_split(dataset, [0.9, 0.1])
   train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
   val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=False)
 
@@ -103,8 +107,17 @@ if __name__ == '__main__':
     accelerator=config.device,
     precision=precision,
     log_every_n_steps=4,
-    logger=tb_logger
+    logger=tb_logger,
   )
 
+  # Try to find previously trained checkpoint
+  ckpt_path = find_checkpoint(training_path, return_none=True) if not config.force_restart else None
+  if ckpt_path is not None:
+    print(f"Resuming from checkpoint: {ckpt_path}")
+
   # Start training
-  trainer.fit(model=ddsp, train_dataloaders=train_loader, val_dataloaders=val_loader)
+  trainer.fit(model=ddsp,
+    train_dataloaders=train_loader,
+    val_dataloaders=val_loader,
+    ckpt_path=ckpt_path
+  )
