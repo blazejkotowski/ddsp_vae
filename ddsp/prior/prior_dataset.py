@@ -22,11 +22,12 @@ class PriorDataset(Dataset):
       - sampling_rate: int, the sampling rate of the audio
       - device: str, the device to use. None will use the originally saved device. [None, 'cuda', 'cpu'].
     """
+    self._device = device
     self._sequence_length = sequence_length
     self._sampling_rate = sampling_rate
 
     self._audio_dataset = AudioDataset(audio_dataset_path, sequence_length + 1)
-    self._encoder = jit.load(encoding_model_path, map_location=device).pretrained.encoder
+    self._encoder = jit.load(encoding_model_path, map_location=device).pretrained.encoder.to(device)
     self._encoder.streaming = False
 
     self._encodings = {}
@@ -43,9 +44,8 @@ class PriorDataset(Dataset):
       - x: torch.Tensor[n_frames, n_latents], the preceding latent code sequence
       - y: torch.Tensor[n_latents], the target latent code
     """
-    print(f"__getitem__: getting item at index {idx}")
     audio = self._audio_dataset[idx]
-    audio = audio.unsqueeze(0)
+    audio = audio.unsqueeze(0).to(self._device)
 
     if idx not in self._encodings:
        mu, scale = self._encoder(audio)
@@ -54,5 +54,4 @@ class PriorDataset(Dataset):
 
     encoding = self._encodings[idx]
 
-    print("__getitem__: Got the encoding")
     return encoding[:-1], encoding[-1]
