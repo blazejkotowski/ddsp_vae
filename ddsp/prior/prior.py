@@ -4,7 +4,7 @@ import torch
 
 class Prior(L.LightningModule):
   """
-  Simple GRU-based prior model predicting the latents.
+  Simple GRU-based prior model predicting the mu and scale of the latents.
 
   Args:
     - latent_size: int, the size of the latent space
@@ -24,14 +24,14 @@ class Prior(L.LightningModule):
     self._lr = lr
 
     self._gru = nn.GRU(
-      input_size=latent_size,
+      input_size=latent_size*2,
       hidden_size=hidden_size,
       num_layers=num_layers,
       dropout=dropout,
       batch_first = True
     )
 
-    self._out = nn.Linear(hidden_size, latent_size)
+    self._out = nn.Linear(hidden_size, latent_size*2)
 
     self._loss = nn.MSELoss()
 
@@ -40,9 +40,9 @@ class Prior(L.LightningModule):
     Predicts the latents from the input.
 
     Args:
-      - x: torch.Tensor[batch_size, seq_len, latent_size], the input sequence of latents
+      - x: torch.Tensor[batch_size, seq_len, latent_size*2], the input sequence of latents
     Returns:
-      - out: torch.Tensor[batch_size, seq_len, latent_size], the predicted sequence of latents
+      - out: torch.Tensor[batch_size, seq_len, latent_size*2], the predicted sequence of latents
     """
     out, _ = self._gru(x)
     out = self._out(out)
