@@ -1,0 +1,9 @@
+auraloss
+lightning
+nn-tilde
+numpy
+tensorboard
+torch
+torchaudio
+scipy
+librosa
