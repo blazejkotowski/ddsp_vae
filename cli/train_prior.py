@@ -18,6 +18,8 @@ if __name__ == '__main__':
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--sequence_length', type=int, default=5, help='Length of the preceding audio in seconds')
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+  parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden state in the GRU')
+  parser.add_argument('--num_layers', type=int, default=4, help='Number of layers in the GRU')
   parser.add_argument('--device', type=str, default='cuda', help='Device to use', choices=['cuda', 'cpu', 'mps'])
   parser.add_argument('--model_name', type=str, help='Name of the model', required=True)
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
@@ -47,8 +49,8 @@ if __name__ == '__main__':
   # Core model
   prior = Prior(
     latent_size=latent_size,
-    hidden_size=128,
-    num_layers=4,
+    hidden_size=config.hidden_size,
+    num_layers=config.num_layers,
     dropout=0.01,
     lr=config.lr,
   )
