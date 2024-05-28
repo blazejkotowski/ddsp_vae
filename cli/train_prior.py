@@ -21,6 +21,7 @@ if __name__ == '__main__':
   parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden state in the GRU')
   parser.add_argument('--num_layers', type=int, default=4, help='Number of layers in the GRU')
   parser.add_argument('--device', type=str, default='cuda', help='Device to use', choices=['cuda', 'cpu', 'mps'])
+  parser.add_argument('--dropout', type=float, default=0.01, help='Dropout rate')
   parser.add_argument('--model_name', type=str, help='Name of the model', required=True)
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds', required=True)
@@ -62,7 +63,7 @@ if __name__ == '__main__':
 
   # Early stopping callback
   callbacks = []
-  callbacks.append(EarlyStopping(monitor='val_loss', patience=5))
+  callbacks.append(EarlyStopping(monitor='val_loss', patience=10))
 
   # Checkpoint callback
   checkpoint_callback = ModelCheckpoint(
