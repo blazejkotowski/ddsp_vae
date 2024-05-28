@@ -2,15 +2,12 @@ import lightning as L
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
-import torch
-
 import argparse
 import os
 
 from torch.utils.data import DataLoader, random_split
 
 from ddsp.prior import Prior, PriorDataset
-
 from ddsp.utils import find_checkpoint
 
 if __name__ == '__main__':
@@ -20,6 +17,7 @@ if __name__ == '__main__':
   parser.add_argument('--force_restart', type=bool, default=False, help='Force restart the training. Ignore the existing checkpoint.')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--sequence_length', type=int, default=5, help='Length of the preceding audio in seconds')
+  parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--device', type=str, default='cuda', help='Device to use', choices=['cuda', 'cpu', 'mps'])
   parser.add_argument('--model_name', type=str, help='Name of the model', required=True)
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
@@ -41,8 +39,8 @@ if __name__ == '__main__':
 
   # Split into training and validation
   train_set, val_set = random_split(dataset, [0.9, 0.1])
-  train_loader = DataLoader(train_set, batch_size=1, shuffle=True)
-  val_loader = DataLoader(val_set, batch_size=1, shuffle=False)
+  train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
+  val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=False)
 
   latent_size = dataset[0][0].shape[-1]
 
