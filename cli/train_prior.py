@@ -36,7 +36,8 @@ if __name__ == '__main__':
     audio_dataset_path=config.dataset_path,
     encoding_model_path=config.model_path,
     sequence_length=config.fs * config.sequence_length,
-    sampling_rate=config.fs
+    sampling_rate=config.fs,
+    device=config.device
   )
 
   # Split into training and validation
