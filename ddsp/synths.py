@@ -19,7 +19,7 @@ class BaseSynth(nn.Module):
     self._fs = fs
     self._resampling_factor = resampling_factor
 
-  def __call__(self, *args, **kwargs):
+  def forward(self, *args, **kwargs):
     raise NotImplementedError
 
 class NoiseBandSynth(BaseSynth):
@@ -46,7 +46,7 @@ class NoiseBandSynth(BaseSynth):
     self._noisebands_shift = 0
 
 
-  def __call__(self, amplitudes: torch.Tensor) -> torch.Tensor:
+  def forward(self, amplitudes: torch.Tensor) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
@@ -105,7 +105,7 @@ class SineSynth(BaseSynth):
     self._phases = None
     self._streaming = streaming
 
-  def __call__(self, frequencies: torch.Tensor, amplitudes: torch.Tensor):
+  def forward(self, frequencies: torch.Tensor, amplitudes: torch.Tensor):
     """
     Generates a mixture of sinewaves with the given frequencies and amplitudes per sample.
 
@@ -161,3 +161,54 @@ class SineSynth(BaseSynth):
     batch_size = signal.shape[0]
     for i in range(batch_size):
       torchaudio.save(f"{i}-{audiofile}", signal[i], self._fs)
+
+
+class HarmonicSynth(BaseSynth):
+  """
+  Synthesiser that generates a mixture of harmonic sinewaves.
+
+  Arguments:
+    - fs: int, the sampling rate of the input signal
+    - n_harmonics: int, the number of harmonics to synthesise
+    - resampling_factor: int, the internal up / down sampling factor for the sinewaves
+    - streaming: bool, whether to run the model in streaming mode
+  """
+  def __init__(self,
+               fs: int = 44100,
+               n_harmonics: int = 100,
+               resampling_factor: int = 32,
+               streaming: bool = False):
+    super().__init__()
+    self._fs = fs
+    self._n_harmonics = n_harmonics
+    self._resampling_factor = resampling_factor
+    self._streaming = streaming
+
+  def forward(self, base_frequency: torch.Tensor, amplitudes: torch.Tensor):
+    """
+    Generates a mixture of harmonic sinewaves with the given base frequency and amplitudes per sample.
+
+    Arguments:
+      - base_frequency: torch.Tensor[batch_size, n_samples], the base frequency of the sinewaves
+      - amplitudes: torch.Tensor[batch_size, n_harmonics, n_samples], the amplitudes of the sinewaves
+    """
+    batch_size = base_frequency.shape[0]
+
+    # Upsample from the internal sampling rate to the target sampling rate
+    base_frequency = F.interpolate(base_frequency, scale_factor=float(self._resampling_factor), mode='linear')
+    amplitudes = F.interpolate(amplitudes, scale_factor=float(self._resampling_factor), mode='linear')
+
+    # Calculate the harmonic frequencies
+    harmonics = torch.arange(1, self._n_harmonics + 1, device=base_frequency.device).float()
+    frequencies = base_frequency.unsqueeze(1) * harmonics.unsqueeze(0)
+
+    # Calculate the phase increments
+    omegas = frequencies * 2 * math.pi / self._fs
+
+    # Calculate the phases at points
+    phases = omegas.cumsum(dim=-1) % (2 * math.pi)
+
+    # Generate and sum the sinewaves
+    signal = torch.sum(amplitudes.unsqueeze(1) * torch.sin(phases), dim=1, keepdim=True)
+    return signal
+

@@ -43,6 +43,8 @@ class DDSP(L.LightningModule):
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
     self.fs = fs
+    self.latent_size = latent_size
+    self.resampling_factor = resampling_factor
 
     # Noisebands synthesiserg
     self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)
@@ -92,7 +94,7 @@ class DDSP(L.LightningModule):
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
-    signal, _ = self._autoencode(audio)
+    signal, _ = self._autoencode(audio, return_loss=False)
     return signal
 
 
@@ -135,11 +137,12 @@ class DDSP(L.LightningModule):
     return y_audio
 
 
-  def _autoencode(self, x_audio: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+  def _autoencode(self, x_audio: torch.Tensor, return_loss: bool = True) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Autoencode the audio signal
     Args:
       - x_audio: torch.Tensor[batch_size, n_signal], the input audio signal
+      - return_loss: bool, whether to return the losses
     Returns:
       - y_audio: torch.Tensor[batch_size, n_signal], the autoencoded audio signal
       - losses: Dict[str, torch.Tensor], the losses computed during the autoencoding
@@ -150,24 +153,27 @@ class DDSP(L.LightningModule):
     # Reparametrization trick
     z, kld_loss = self.encoder.reparametrize(mu, scale)
 
-    # Predict the parameters of the synthesiser
+    # Predict the parameters of the synthesizer
     synth_params = self.decoder(z)
 
     # Synthesize the output signal
-    y_audio = self._synthesize(*synth_params)
+    y_audio = self.synthesize(synth_params)
 
-    # Compute the reconstruction loss
-    recons_loss = self._recons_loss(y_audio, x_audio)
+    if return_loss and self._recons_loss is not None:
+      # Compute the reconstruction loss
+      recons_loss = self._recons_loss(y_audio, x_audio)
 
-    # Compute the total loss using β parameter
-    loss = recons_loss + self._kld_weight * self._beta * kld_loss
+      # Compute the total loss using β parameter
+      loss = recons_loss + self._kld_weight * self._beta * kld_loss
 
-    # Construct losses dictionary
-    losses = {
-      "recons_loss": recons_loss,
-      "kld_loss": kld_loss,
-      "loss": loss
-    }
+      # Construct losses dictionary
+      losses = {
+        "recons_loss": recons_loss,
+        "kld_loss": kld_loss,
+        "loss": loss
+      }
+    else:
+      losses = {}
 
     return y_audio, losses
 
@@ -197,16 +203,23 @@ class DDSP(L.LightningModule):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
 
-  def _synthesize(self, noiseband_amps: torch.Tensor, sine_freqs: torch.Tensor, sine_amps: torch.Tensor) -> torch.Tensor:
+  def synthesize(self, synth_params: torch.Tensor) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
-      - noiseband_amps: torch.Tensor[batch_size, n_bands, sig_length], the predicted amplitudes of the noise bands
-      - sine_freqs: torch.Tensor[batch_size, n_sines, sig_length], the predicted frequencies of the sines
-      - sine_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the sines
+      - synth_params: torch.Tensor[batch_size, n_params, n_signal], the predicted parameters
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
+    # noiseband_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the noise bands
+    noiseband_amps = synth_params[..., :self.decoder.n_bands].permute(0, 2, 1)
+
+    # sine_freqs: torch.Tensor[batch_size, n_sines, sig_length], the predicted frequencies of the sines
+    sine_freqs = synth_params[..., self.decoder.n_bands:self.decoder.n_bands + self.decoder.n_sines].permute(0, 2, 1)
+
+    # sine_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the sines
+    sine_amps = synth_params[..., self.decoder.n_bands + self.decoder.n_sines:].permute(0, 2, 1)
+
     sines = self._sine_synth(sine_freqs, sine_amps)
     noisebands = self._noisebands_synth(noiseband_amps)
     return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)

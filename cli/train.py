@@ -107,7 +107,7 @@ if __name__ == '__main__':
     accelerator=config.device,
     precision=precision,
     log_every_n_steps=4,
-    logger=tb_logger,
+    logger=tb_logger
   )
 
   # Try to find previously trained checkpoint
@@ -116,7 +116,8 @@ if __name__ == '__main__':
     print(f"Resuming from checkpoint: {ckpt_path}")
 
   # Start training
-  trainer.fit(model=ddsp,
+  trainer.fit(
+    model=ddsp,
     train_dataloaders=train_loader,
     val_dataloaders=val_loader,
     ckpt_path=ckpt_path

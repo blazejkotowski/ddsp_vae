@@ -191,15 +191,13 @@ class Decoder(nn.Module):
     self.output_params = nn.Linear(hidden_size, n_bands + n_sines * 2)
 
 
-  def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  def forward(self, z: torch.Tensor) -> torch.Tensor:
     """
     Forward pass of the decoder.
     Arguments:
       - z: torch.Tensor, the latent space tensor
     Returns:
-      - noiseband_amps: torch.Tensor, the predicted noiseband amplitudes
-      - sine_freqs: torch.Tensor, the predicted sine frequencies
-      - sine_amps: torch.Tensor, the predicted sine amplitudes
+      - params: torch.Tensor, the synth parameters tensor
     """
     # Pass through the input MLP
     x = self.input_bottleneck(z)
@@ -215,10 +213,6 @@ class Decoder(nn.Module):
     x = self.inter_mlp(x)
 
     # Pass through the output layer
-    output = _scaled_sigmoid(self.output_params(x))
+    synth_params = _scaled_sigmoid(self.output_params(x))
 
-    noiseband_amps = output[..., :self.n_bands].permute(0, 2, 1)
-    sine_freqs = output[..., self.n_bands:self.n_bands + self.n_sines].permute(0, 2, 1)
-    sine_amps = output[..., self.n_bands + self.n_sines:].permute(0, 2, 1)
-
-    return noiseband_amps, sine_freqs, sine_amps
+    return synth_params
