@@ -25,6 +25,7 @@ if __name__ == '__main__':
   parser.add_argument('--model_name', type=str, help='Name of the model', required=True)
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds', required=True)
+  parser.add_argument('--early_stopping', type=bool, default=True, help='Enable early stopping')
   config = parser.parse_args()
 
 
@@ -63,7 +64,8 @@ if __name__ == '__main__':
 
   # Early stopping callback
   callbacks = []
-  callbacks.append(EarlyStopping(monitor='val_loss', patience=10))
+  if config.early_stopping:
+    callbacks.append(EarlyStopping(monitor='val_loss', patience=10))
 
   # Checkpoint callback
   checkpoint_callback = ModelCheckpoint(
