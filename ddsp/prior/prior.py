@@ -59,7 +59,7 @@ class Prior(L.LightningModule):
       x, hx = self._gru(x)
       self._hidden_state.copy_(hx)
     else:
-      x, = self._gru(x)
+      x, _ = self._gru(x)
 
     out = self._out(x)
 
