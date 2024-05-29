@@ -20,6 +20,9 @@ class Prior(L.LightningModule):
                dropout: float = 0.01,
                lr: float = 1e-3):
     super().__init__()
+    self.save_hyperparameters()
+
+    self.latent_size = latent_size
 
     self._lr = lr
 
