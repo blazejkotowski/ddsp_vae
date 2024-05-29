@@ -50,9 +50,13 @@ class PriorDataset(Dataset):
     if idx not in self._encodings:
        with torch.no_grad():
         mu, scale = self._encoder(audio)
-        mu_scale = torch.cat([mu, scale], dim = -1)
-        # enc, _ = self._encoder.reparametrize(mu, scale)
-        self._encodings[idx] = mu_scale.squeeze(0)
+        # With reparametrization
+        enc, _ = self._encoder.reparametrize(mu, scale)
+        self._encodings[idx] = enc.squeeze(0)
+
+        # # Without reparametrization
+        # mu_scale = torch.cat([mu, scale], dim = -1)
+        # self._encodings[idx] = mu_scale.squeeze(0)
 
     encoding = self._encodings[idx]
 
