@@ -26,6 +26,7 @@ if __name__ == '__main__':
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds', required=True)
   parser.add_argument('--early_stopping', type=bool, default=True, help='Enable early stopping')
+  parser.add_argument('--rnn_type', type=str, default='gru', help='Type of the RNN to use', choices=['gru', 'lstm'])
   config = parser.parse_args()
 
 
@@ -57,6 +58,7 @@ if __name__ == '__main__':
     dropout=0.01,
     lr=config.lr,
     sequence_length=config.sequence_length,
+    rnn_type=config.rnn_type
   )
 
   # Setup the logger
