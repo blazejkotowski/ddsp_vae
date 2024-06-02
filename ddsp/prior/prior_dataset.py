@@ -95,7 +95,7 @@ class PriorDataset(Dataset):
     for filepath in glob(os.path.join(path, '**', '*.wav'), recursive=True):
       x = self._load_audio_file(filepath)
       audio = torch.concat([audio, torch.from_numpy(x)], dim = 0)
-    return audio
+    return audio.to(self._device)
 
   def _load_audio_file(self, path: str):
     """
