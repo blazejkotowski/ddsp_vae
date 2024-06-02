@@ -37,11 +37,11 @@ class PriorDataset(Dataset):
     self._encoder = vae_model.encoder
     self._encoder.streaming = False
 
-    self._audio = self._load_audio_dataset(audio_dataset_path)
-    self._encodings = {}
+    audio = self._load_audio_dataset(audio_dataset_path)
+    self._encodings = self._encode_audio_dataset(audio)
 
   def __len__(self) -> int:
-    return len(self._audio) - (self._resampling_factor * self._sequence_length)
+    return len(self._encodings) - self._sequence_length - 1
 
   def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -52,20 +52,34 @@ class PriorDataset(Dataset):
       - x: torch.Tensor[n_frames, n_latents], the preceding latent code sequence
       - y: torch.Tensor[n_latents], the target latent code
     """
-    sample_start = idx
-    sample_end = sample_start + (self._sequence_length * self._resampling_factor)
-    audio_sample = self._audio[sample_start:sample_end]
 
-    if idx not in self._encodings:
-       with torch.no_grad():
-        mu, scale = self._encoder(audio_sample.unsqueeze(0))
-        mu_scale = torch.cat([mu, scale], dim = -1)
-        # enc, _ = self._encoder.reparametrize(mu, scale)
-        self._encodings[idx] = mu_scale.squeeze(0)
-
-    encoding = self._encodings[idx]
-
+    encoding = self._encodings[idx:idx+self._sequence_length+1]
     return encoding[:-1], encoding[-1]
+
+
+  def _encode_audio_dataset(self, audio):
+    """
+    Encode the entire audio dataset into latent codes.
+    Arguments:
+      - audio: torch.Tensor, the audio tensor
+      - sequence_length: int, the length of the preceding latent code sequence, in samples
+    Returns:
+      - encodings: Dict[int, torch.Tensor], the encoded latent codes
+    """
+    print("Encoding audio dataset...")
+    chunk_length = 44100 # 1 s
+    encodings = torch.tensor([], dtype=torch.float32, device=self._device)
+
+    for i in range(len(audio) // chunk_length + 1):
+      sample_start = i * chunk_length
+      sample_end = sample_start + chunk_length
+      audio_sample = audio[sample_start:sample_end]
+      with torch.no_grad():
+        mu, scale = self._encoder(audio_sample.unsqueeze(0))
+        mu_scale = torch.cat([mu, scale], dim = -1).squeeze(0)
+        encodings = torch.cat([encodings, mu_scale], dim = 0)
+
+    return encodings
 
 
   def _load_audio_dataset(self, path: str) -> torch.Tensor:
