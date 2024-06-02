@@ -16,8 +16,8 @@ if __name__ == '__main__':
   parser.add_argument('--training_dir', type=str, default='training/prior', help='Directory to save the training logs')
   parser.add_argument('--force_restart', type=bool, default=False, help='Force restart the training. Ignore the existing checkpoint.')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
-  parser.add_argument('--sequence_length', type=int, default=5, help='Length of the preceding audio in seconds')
-  parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+  parser.add_argument('--sequence_length', type=int, default=5, help='Number of the preceding latent codes')
+  parser.add_argument('--batch_size', type=int, default=512, help='Batch size for training')
   parser.add_argument('--hidden_size', type=int, default=128, help='Size of the hidden state in the GRU')
   parser.add_argument('--num_layers', type=int, default=4, help='Number of layers in the GRU')
   parser.add_argument('--device', type=str, default='cuda', help='Device to use', choices=['cuda', 'cpu', 'mps'])
@@ -37,7 +37,7 @@ if __name__ == '__main__':
   dataset = PriorDataset(
     audio_dataset_path=config.dataset_path,
     encoding_model_path=config.model_path,
-    sequence_length=config.fs * config.sequence_length,
+    sequence_length=config.sequence_length,
     sampling_rate=config.fs,
     device=config.device
   )
@@ -56,6 +56,7 @@ if __name__ == '__main__':
     num_layers=config.num_layers,
     dropout=0.01,
     lr=config.lr,
+    sequence_length=config.sequence_length,
   )
 
   # Setup the logger
