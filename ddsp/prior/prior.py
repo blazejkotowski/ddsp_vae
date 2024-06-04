@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 import torchaudio
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 def _is_batch_size_one(x: torch.Tensor) -> bool:
   return x.shape[0] == 1
@@ -31,7 +32,7 @@ class Prior(L.LightningModule):
                dropout: float = 0.01,
                lr: float = 1e-3,
                streaming: bool = False,
-               sequence_length: int = 10,
+               sequence_length: int = 100,
                rnn_type: str = 'gru',
                x_min: float = -1,
                x_max: float = 1):
@@ -93,13 +94,15 @@ class Prior(L.LightningModule):
     batch_size = input.shape[0]
     # Normalize the input
     x = self._quantize(self._normalize(input)).float()
+
+    # Pass through rnn
     rnn_out = self._rnn(x)[:, -1, :] # take the last one
 
     # Densely connected layer
-    logits = self._fc(rnn_out)
+    fc_out = self._fc(rnn_out)
 
     # Reshape to [batch_size, latent_size, quantization_channels]
-    logits = logits.view(batch_size, self.latent_size, self._quantization_channels)
+    logits = fc_out.view(batch_size, self.latent_size, self._quantization_channels)
 
     return logits
 
@@ -119,8 +122,18 @@ class Prior(L.LightningModule):
     logits = self(x)
     target = self._quantize(self._normalize(y)).long()
 
+    # Original
     loss = F.cross_entropy(logits.view(-1, self._quantization_channels), target.view(-1))
     return loss
+
+    # Alternative
+    # target_one_hot = F.one_hot(target, self._quantization_channels)
+    # logits = torch.log_softmax(logits, dim=-1)
+    # cross_entropy = -torch.sum(target_one_hot * logits, dim=-1)
+    # return cross_entropy.mean()
+
+
+    # sample = self.sample(logits)
 
 
   def sample(self, logits, temperature=1.0):
@@ -139,7 +152,7 @@ class Prior(L.LightningModule):
     sampled = torch.multinomial(probs.view(-1, self._quantization_channels), 1)
     sampled = sampled.view(batch_size, self.latent_size)
 
-    return self._dequantize(self._denormalize(logits))
+    return self._dequantize(self._denormalize(sampled))
 
 
   def training_step(self, batch, batch_idx):
@@ -177,7 +190,15 @@ class Prior(L.LightningModule):
 
 
   def configure_optimizers(self):
-    return torch.optim.Adam(self.parameters(), lr=self._lr)
+    # optimizer = torch.optim.Adam(self.parameters())
+    optimizer = torch.optim.SGD(self.parameters(), momentum=0.9)
+    return {
+      "optimizer": optimizer,
+      "lr_scheduler": {
+        "scheduler": ReduceLROnPlateau(optimizer, patience=10),
+        "monitor": "train_loss",
+      }
+    }
 
 
   def _rnn(self, x: torch.Tensor) -> torch.Tensor:
