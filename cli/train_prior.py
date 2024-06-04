@@ -58,12 +58,13 @@ if __name__ == '__main__':
     dropout=0.01,
     lr=config.lr,
     sequence_length=config.sequence_length,
-    rnn_type=config.rnn_type
+    rnn_type=config.rnn_type,
+    x_min=dataset.min_value,
+    x_max=dataset.max_value
   )
 
   # Setup the logger
   logger = TensorBoardLogger(training_path, name=config.model_name)
-
 
   # Early stopping callback
   callbacks = []

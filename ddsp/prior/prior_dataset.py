@@ -39,6 +39,8 @@ class PriorDataset(Dataset):
 
     audio = self._load_audio_dataset(audio_dataset_path)
     self._encodings = self._encode_audio_dataset(audio)
+    self.max_value = self._encodings.max().item()
+    self.min_value = self._encodings.min().item()
 
   def __len__(self) -> int:
     return len(self._encodings) - self._sequence_length - 1
