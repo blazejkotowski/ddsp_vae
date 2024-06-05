@@ -81,7 +81,7 @@ class Prior(L.LightningModule):
     Returns:
       - out: torch.Tensor[batch_size, seq_len, latent_size], the predicted sequence of latents
     """
-    x = self._rnn(x)
+    x = self._rnn(x)[:, -1, :]
 
     # Densely connected layer
     out = self._out(x)
@@ -114,43 +114,63 @@ class Prior(L.LightningModule):
 
     return out
 
-  def training_step(self, batch, batch_idx):
+
+  def training_step(self, sequence, batch_idx):
     """
     Computes the loss for a batch of data.
 
     Args:
-      - batch: torch.Tensor[batch_size, seq_len, latent_size], the input sequence of latents
+      - batch: torch.Tensor[batch_size, seq_len*2, latent_size], the input sequence of latents
       - batch_idx: int, the index of the batch
     Returns:
       - loss: torch.Tensor[1], the loss
     """
-    train_loss = self._step(batch)
-    self.log("train_loss", train_loss, prog_bar=True, logger=True)
 
-    return train_loss
+    # Teacher forcing
+    total_loss = self._teacher_forcing(sequence)
+    self.log("train_loss", total_loss, prog_bar=True, logger=True)
+
+    return total_loss
+
+
+  def _teacher_forcing(self, sequence: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate the loss using teacher forcing.
+    Predict the next latent code from the preceding sequence with shifting window.
+    Attach previously predicted latent code to the input sequence.
+
+    Args:
+      - sequence: torch.Tensor[batch_size, seq_len*2, latent_size], the input sequence of latents
+    Returns:
+      - total_loss: torch.Tensor[1], the loss
+    """
+
+    x = sequence[:, :self.sequence_length, :]
+    total_loss = torch.zeros(1, requires_grad=True)
+    for i in range(self.sequence_length):
+      y = sequence[:, self.sequence_length+i, :]
+      y_hat = self(x)
+      total_loss = total_loss + self._loss(y_hat, y)
+      x = torch.cat([x[:, 1:, :], y_hat.unsqueeze(1)], dim=1)
+
+    return total_loss
+
 
   def validation_step(self, batch, batch_idx):
     """
     Computes the loss for a batch of validation data.
 
     Args:
-      - batch: torch.Tensor[batch_size, seq_len, latent_size], the input sequence of latents
+      - batch: torch.Tensor[batch_size, seq_len*2, latent_size], the input sequence of latents
       - batch_idx: int, the index of the batch
     Returns:
       - loss: torch.Tensor[1], the loss
     """
-    val_loss = self._step(batch)
+    val_loss = self._teacher_forcing(batch)
     self.log("val_loss", val_loss, prog_bar=True, logger=True)
 
     return val_loss
 
-  def _step(self, batch):
-    x, y = batch
-    y_hat = self(x)[:, -1, :]
-
-    loss = self._loss(y_hat, y)
-
-    return loss
 
   def configure_optimizers(self):
     return torch.optim.Adam(self.parameters(), lr=self._lr)

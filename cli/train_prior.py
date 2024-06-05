@@ -38,7 +38,7 @@ if __name__ == '__main__':
   dataset = PriorDataset(
     audio_dataset_path=config.dataset_path,
     encoding_model_path=config.model_path,
-    sequence_length=config.sequence_length,
+    sequence_length=config.sequence_length * 2,
     sampling_rate=config.fs,
     device=config.device
   )

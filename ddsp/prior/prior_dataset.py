@@ -54,7 +54,7 @@ class PriorDataset(Dataset):
     """
 
     encoding = self._encodings[idx:idx+self._sequence_length+1]
-    return encoding[:-1], encoding[-1]
+    return encoding
 
 
   def _encode_audio_dataset(self, audio):
