@@ -146,7 +146,7 @@ class Prior(L.LightningModule):
     """
 
     x = sequence[:, :self.sequence_length, :]
-    total_loss = torch.zeros(1, requires_grad=True)
+    total_loss = torch.zeros(1, requires_grad=True).to(self._device)
     for i in range(self.sequence_length):
       y = sequence[:, self.sequence_length+i, :]
       y_hat = self(x)
