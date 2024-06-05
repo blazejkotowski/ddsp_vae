@@ -8,9 +8,63 @@ import os
 
 from typing import Tuple
 
-from ddsp import AudioDataset
-
 torch.set_default_dtype(torch.float32)
+
+class DummySinewaveDataset(Dataset):
+  def __init__(self, sequence_length: int = 100, latents: int = 16):
+    self._sequence_length = sequence_length
+    self._data = torch.sin(torch.linspace(0, 2*torch.pi, 10000)).unsqueeze(0).repeat(latents, 1).permute(1, 0)
+    self.min_value = self._data.min().item()
+    self.max_value = self._data.max().item()
+
+  def __len__(self) -> int:
+    return len(self._data) - self._sequence_length - 1
+
+  def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    return self._data[idx:idx+self._sequence_length], self._data[idx+self._sequence_length]
+
+class DummyZeroDataset(Dataset):
+  def __init__(self, sequence_length: int = 100, latents: int = 16):
+    self._sequence_length = sequence_length
+    self._data = torch.randn(10000, latents)
+    self._latents = latents
+    self.min_value = self._data.min().item()
+    self.max_value = self._data.max().item()
+
+  def __len__(self) -> int:
+    return len(self._data) - self._sequence_length
+
+  def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    return self._data[idx:idx+self._sequence_length], torch.zeros(self._latents)
+
+
+class DummyLinearDataset(Dataset):
+  def __init__(self, sequence_length: int = 100, latents: int = 16):
+    self._sequence_length = sequence_length
+    self._data = torch.linspace(0, 1, 10000).unsqueeze(0).repeat(latents, 1).permute(1, 0)
+    self.min_value = self._data.min().item()
+    self.max_value = self._data.max().item()
+
+  def __len__(self) -> int:
+    return len(self._data) - self._sequence_length - 1
+
+  def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    return self._data[idx:idx+self._sequence_length], self._data[idx+self._sequence_length]
+
+
+class DummyIdentityDataset(Dataset):
+  def __init__(self, sequence_length: int = 100, latents: int = 16):
+    self._sequence_length = sequence_length
+    self._data = torch.linspace(0, 1, 10000).unsqueeze(0).repeat(latents, 1).permute(1, 0)
+    self.min_value = self._data.min().item()
+    self.max_value = self._data.max().item()
+
+  def __len__(self) -> int:
+    return len(self._data) - self._sequence_length
+
+  def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    return self._data[idx:idx+self._sequence_length], self._data[idx+self._sequence_length-1]
+
 
 class PriorDataset(Dataset):
   def __init__(self,

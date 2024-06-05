@@ -21,6 +21,7 @@ class Prior(L.LightningModule):
     - streaming: bool, whether to run the model in streaming mode
     - sequence_length: int, the length of the preceding latent code sequence for prediction
     - rnn_type: str, the type of the RNN to use ['gru', 'lstm']
+    - embedding_dim: int, the dimension of the embedding layer
     - x_min: float, the minimum value of the input (for normalization step)
     - x_max: float, the maximum value of the input (for normalization step)
   """
@@ -34,6 +35,7 @@ class Prior(L.LightningModule):
                streaming: bool = False,
                sequence_length: int = 100,
                rnn_type: str = 'gru',
+               embedding_dim: int = 16,
                x_min: float = -1,
                x_max: float = 1):
     super().__init__()
@@ -45,20 +47,25 @@ class Prior(L.LightningModule):
     self._type = rnn_type
     self._streaming = streaming
     self._lr = lr
+    self._embedding_dim = embedding_dim
 
     # These are for normalization
     self._x_min = x_min
     self._x_max = x_max
 
-    self._quantization_channels = 256
+    self._quantization_channels = 16
     self._quantize = torchaudio.transforms.MuLawEncoding(self._quantization_channels)
     self._dequantize = torchaudio.transforms.MuLawDecoding(self._quantization_channels)
 
     # Build the network
+
+    ## Embedding layer
+    self._embedding = nn.Embedding(self._quantization_channels, self._embedding_dim)
+
     ## GRU layer
     if self._type == 'gru':
       self._gru = nn.GRU(
-        input_size=latent_size,
+        input_size=self._embedding_dim * self.latent_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
         dropout=dropout,
@@ -67,7 +74,7 @@ class Prior(L.LightningModule):
 
     elif self._type == 'lstm':
       self._lstm = nn.LSTM(
-        input_size=latent_size,
+        input_size=self._embedding_dim * self.latent_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
         dropout=dropout,
@@ -79,7 +86,7 @@ class Prior(L.LightningModule):
     self.register_buffer('_cell_state', torch.zeros(num_layers, 1, hidden_size), persistent=False)
 
     ## Densely connected output layer mapping to logits (one class per quantization bin)
-    self._fc = nn.Linear(hidden_size, latent_size * self._quantization_channels)
+    self._fc = nn.Linear(hidden_size, self.latent_size * self._quantization_channels)
 
 
   def forward(self, input):
@@ -92,11 +99,16 @@ class Prior(L.LightningModule):
       - logits: torch.Tensor[batch_size, latent_size, quantization_channels], the predicted logits
     """
     batch_size = input.shape[0]
-    # Normalize the input
-    x = self._quantize(self._normalize(input)).float()
+    seq_len = input.shape[1]
+    # Quantize the input into bins
+    x = self._quantize(self._normalize(input)).long()
 
-    # Pass through rnn
-    rnn_out = self._rnn(x)[:, -1, :] # take the last one
+    # Create embeddings
+    embeds = self._embedding(x)
+    flattened = embeds.view(batch_size, seq_len, -1)
+
+    # Pass through RNN
+    rnn_out = self._rnn(flattened)[:, -1, :] # take the last one
 
     # Densely connected layer
     fc_out = self._fc(rnn_out)
@@ -123,7 +135,9 @@ class Prior(L.LightningModule):
     target = self._quantize(self._normalize(y)).long()
 
     # Original
-    loss = F.cross_entropy(logits.view(-1, self._quantization_channels), target.view(-1))
+    # breakpoint()
+    # loss = F.cross_entropy(logits.view(-1, self._quantization_channels), target.view(-1))
+    loss = F.cross_entropy(logits.permute(0, 2, 1), target)
     return loss
 
     # Alternative
@@ -138,7 +152,7 @@ class Prior(L.LightningModule):
 
   def sample(self, logits, temperature=1.0):
     """
-    Samples from the logits using the Gumbel-Softmax trick.
+    Samples from the logits.
 
     Args:
       - logits: torch.Tensor[batch_size, latent_size], the logits
@@ -152,7 +166,7 @@ class Prior(L.LightningModule):
     sampled = torch.multinomial(probs.view(-1, self._quantization_channels), 1)
     sampled = sampled.view(batch_size, self.latent_size)
 
-    return self._dequantize(self._denormalize(sampled))
+    return self._denormalize(self._dequantize(sampled))
 
 
   def training_step(self, batch, batch_idx):
@@ -185,17 +199,18 @@ class Prior(L.LightningModule):
     x, y = batch
     val_loss = self.loss(x, y)
     self.log("val_loss", val_loss, prog_bar=True, logger=True)
+    self.log("accuracy" , self._accuracy(y, self(x)), prog_bar=True, logger=True)
 
     return val_loss
 
 
   def configure_optimizers(self):
-    # optimizer = torch.optim.Adam(self.parameters())
-    optimizer = torch.optim.SGD(self.parameters(), momentum=0.9)
+    optimizer = torch.optim.Adam(self.parameters(), lr=self._lr, weight_decay=1e-2)
+    # optimizer = torch.optim.SGD(self.parameters(), momentum=0.9, weight_decay=1e-2, lr=self._lr)
     return {
       "optimizer": optimizer,
       "lr_scheduler": {
-        "scheduler": ReduceLROnPlateau(optimizer, patience=10),
+        "scheduler": ReduceLROnPlateau(optimizer, patience=1),
         "monitor": "train_loss",
       }
     }
@@ -226,6 +241,20 @@ class Prior(L.LightningModule):
         out, (_, _) = self._lstm(x)
 
     return out
+
+  def _accuracy(self, y: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the MSE for a batch of data.
+
+    Args:
+      - y: torch.Tensor[batch_size, seq_len, latent_size], the target latents
+      - logits: torch.Tensor[batch_size, seq_len, latent_size], the predicted logits
+    Returns:
+      - mse: torch.Tensor[1], the mean squared error
+    """
+    with torch.no_grad():
+      y_hat = self.sample(logits)
+      return F.mse_loss(y_hat, y)
 
 
   def _normalize(self, x: torch.Tensor) -> torch.Tensor:

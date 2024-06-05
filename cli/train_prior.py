@@ -7,7 +7,7 @@ import os
 
 from torch.utils.data import DataLoader, random_split
 
-from ddsp.prior import Prior, PriorDataset
+from ddsp.prior import Prior, PriorDataset, DummySinewaveDataset, DummyZeroDataset, DummyLinearDataset, DummyIdentityDataset
 from ddsp.utils import find_checkpoint
 
 if __name__ == '__main__':
@@ -34,6 +34,7 @@ if __name__ == '__main__':
   training_path = os.path.join(config.training_dir, config.model_name)
   os.makedirs(training_path, exist_ok=True)
 
+  # TODO: Use actual dataset
   # Load Dataset
   dataset = PriorDataset(
     audio_dataset_path=config.dataset_path,
@@ -43,8 +44,21 @@ if __name__ == '__main__':
     device=config.device
   )
 
+  # TODO: Do not use this
+  # dataset = DummySinewaveDataset(sequence_length=config.sequence_length)
+
+  # TODO: Do not use this
+  # dataset = DummyZeroDataset(sequence_length=config.sequence_length)
+
+  # TODO: Do not use this
+  # dataset = DummyLinearDataset(sequence_length=config.sequence_length)
+
+  # TODO: Do not use this
+  # dataset = DummyIdentityDataset(sequence_length=config.sequence_length)
+
   # Split into training and validation
-  train_set, val_set = random_split(dataset, [0.9, 0.1])
+  # train_set, val_set = random_split(dataset, [0.9, 0.1]) # TODO: Use entire dataset
+  train_set, val_set, _ = random_split(dataset, [0.09, 0.01, 0.9]) # TODO: Do not use just a tiny part
   train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
   val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=False)
 
