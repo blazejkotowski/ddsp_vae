@@ -100,7 +100,7 @@ class Prior(L.LightningModule):
     batch_size = x.size(0)
     if self._type == 'gru':
       if self._streaming:
-        if self._hidden_state is None or batch_size != self._hidden_state.size(0):
+        if self._hidden_state is None or batch_size != self._hidden_state.size(1):
           self._hidden_state = torch.zeros(self._gru.num_layers, batch_size, self._gru.hidden_size).to(x.device)
 
         out, hx = self._gru(x, self._hidden_state)
@@ -110,7 +110,7 @@ class Prior(L.LightningModule):
 
     elif self._type == 'lstm':
       if self._streaming:
-        if self._hidden_state is None or batch_size != self._hidden_state.size(0):
+        if self._hidden_state is None or batch_size != self._hidden_state.size(1):
           self._hidden_state = torch.zeros(self._lstm.num_layers, batch_size, self._lstm.hidden_size).to(x.device)
           self._cell_state = torch.zeros(self._lstm.num_layers, batch_size, self._lstm.hidden_size).to(x.device)
 
