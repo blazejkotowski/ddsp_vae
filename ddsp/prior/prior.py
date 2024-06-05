@@ -69,7 +69,7 @@ class Prior(L.LightningModule):
     # self._loss = nn.L1Loss()
 
     # For keeping the GRU hidden state in streaming mode
-    self.register_buffer('_hidden_state', None)
+    self.register_buffer('_hidden_state', None, persistent=False)
     self.register_buffer('_cell_state', None, persistent=False)
 
   def forward(self, x):
@@ -110,8 +110,8 @@ class Prior(L.LightningModule):
     elif self._type == 'lstm':
       if self._streaming:
         if self._hidden_state is None or x.size(0) != self._hidden_state.size(0):
-          self._hidden_state = torch.zeros(x.size(0), self._gru.num_layers, 1, self._gru.hidden_size).to(x.device)
-          self._cell_state = torch.zeros(x.size(0), self._gru.num_layers, 1, self._gru.hidden_size).to(x.device)
+          self._hidden_state = torch.zeros(x.size(0), self._lstm.num_layers, 1, self._lstm.hidden_size).to(x.device)
+          self._cell_state = torch.zeros(x.size(0), self._lstm.num_layers, 1, self._lstm.hidden_size).to(x.device)
 
         out, (hx, cx) = self._lstm(x, (self._hidden_state, self._cell_state))
         self._hidden_state.copy_(hx)
@@ -151,8 +151,11 @@ class Prior(L.LightningModule):
     Returns:
       - total_loss: torch.Tensor[1], the loss
     """
-    self._hidden_state = None
-    self._cell_state = None
+
+    preserve_streaming = self._streaming
+    self._streaming = True
+
+    self.reset_state()
 
     losses = []
 
@@ -165,7 +168,13 @@ class Prior(L.LightningModule):
       x = y_hat.unsqueeze(1)
       y = sequence[:, self.sequence_length + i, :]
 
+    self._streaming = preserve_streaming
     return torch.mean(torch.stack(losses))
+
+
+  def reset_state(self):
+    self._hidden_state = None
+    self._cell_state = None
 
 
   def validation_step(self, batch, batch_idx):
