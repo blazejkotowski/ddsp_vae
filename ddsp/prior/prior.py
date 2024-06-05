@@ -69,8 +69,8 @@ class Prior(L.LightningModule):
     # self._loss = nn.L1Loss()
 
     # For keeping the GRU hidden state in streaming mode
-    self.register_buffer('_hidden_state', torch.zeros(num_layers, 1, hidden_size), persistent=False)
-    self.register_buffer('_cell_state', torch.zeros(num_layers, 1, hidden_size), persistent=False)
+    self.register_buffer('_hidden_state', None)
+    self.register_buffer('_cell_state', None, persistent=False)
 
   def forward(self, x):
     """
@@ -98,14 +98,21 @@ class Prior(L.LightningModule):
       - out: torch.Tensor[batch_size, seq_len, latent_size], the predicted sequence of latents
     """
     if self._type == 'gru':
-      if self._streaming and _is_batch_size_one(x):
+      if self._streaming:
+        if self._hidden_state is None or x.size(0) != self._hidden_state.size(0):
+          self._hidden_state = torch.zeros(x.size(0), self._gru.num_layers, 1, self._gru.hidden_size).to(x.device)
+
         out, hx = self._gru(x, self._hidden_state)
         self._hidden_state.copy_(hx)
       else:
         out, _ = self._gru(x)
 
     elif self._type == 'lstm':
-      if self._streaming and _is_batch_size_one(x):
+      if self._streaming:
+        if self._hidden_state is None or x.size(0) != self._hidden_state.size(0):
+          self._hidden_state = torch.zeros(x.size(0), self._gru.num_layers, 1, self._gru.hidden_size).to(x.device)
+          self._cell_state = torch.zeros(x.size(0), self._gru.num_layers, 1, self._gru.hidden_size).to(x.device)
+
         out, (hx, cx) = self._lstm(x, (self._hidden_state, self._cell_state))
         self._hidden_state.copy_(hx)
         self._cell_state.copy_(cx)
@@ -144,16 +151,21 @@ class Prior(L.LightningModule):
     Returns:
       - total_loss: torch.Tensor[1], the loss
     """
+    self._hidden_state = None
+    self._cell_state = None
+
+    losses = []
 
     x = sequence[:, :self.sequence_length, :]
-    total_loss = torch.zeros(1, requires_grad=True).to(self._device)
-    for i in range(self.sequence_length):
-      y = sequence[:, self.sequence_length+i, :]
-      y_hat = self(x)
-      total_loss = total_loss + self._loss(y_hat, y)
-      x = torch.cat([x[:, 1:, :], y_hat.unsqueeze(1)], dim=1)
+    y = sequence[:, self.sequence_length, :]
 
-    return total_loss
+    for i in range(self.sequence_length):
+      y_hat = self(x)
+      losses.append(self._loss(y_hat, y))
+      x = y_hat.unsqueeze(1)
+      y = sequence[:, self.sequence_length + i, :]
+
+    return torch.mean(torch.stack(losses))
 
 
   def validation_step(self, batch, batch_idx):
