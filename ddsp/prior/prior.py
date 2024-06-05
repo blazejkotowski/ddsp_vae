@@ -1,7 +1,7 @@
 import lightning as L
 import torch.nn as nn
 import torch
-import numpy as np
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 def _is_batch_size_one(x: torch.Tensor) -> bool:
   return x.shape[0] == 1
@@ -185,4 +185,11 @@ class Prior(L.LightningModule):
 
 
   def configure_optimizers(self):
-    return torch.optim.Adam(self.parameters(), lr=self._lr)
+    optimizer = torch.optim.Adam(self.parameters(), lr=self._lr, weight_decay=1e-2)
+    return {
+      "optimizer": optimizer,
+      "lr_scheduler": {
+        "scheduler": ReduceLROnPlateau(optimizer, patience=1),
+        "monitor": "train_loss",
+      }
+    }
