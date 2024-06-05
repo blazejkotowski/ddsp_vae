@@ -97,25 +97,26 @@ class Prior(L.LightningModule):
     Returns:
       - out: torch.Tensor[batch_size, seq_len, latent_size], the predicted sequence of latents
     """
+    batch_size = x.size(0)
     if self._type == 'gru':
       if self._streaming:
-        if self._hidden_state is None or x.size(0) != self._hidden_state.size(0):
-          self._hidden_state = torch.zeros(x.size(0), self._gru.num_layers, 1, self._gru.hidden_size).to(x.device)
+        if self._hidden_state is None or batch_size != self._hidden_state.size(0):
+          self._hidden_state = torch.zeros(self._gru.num_layers, batch_size, self._gru.hidden_size).to(x.device)
 
         out, hx = self._gru(x, self._hidden_state)
-        self._hidden_state.copy_(hx)
+        self._hidden_state = hx.detach()
       else:
         out, _ = self._gru(x)
 
     elif self._type == 'lstm':
       if self._streaming:
-        if self._hidden_state is None or x.size(0) != self._hidden_state.size(0):
-          self._hidden_state = torch.zeros(x.size(0), self._lstm.num_layers, 1, self._lstm.hidden_size).to(x.device)
-          self._cell_state = torch.zeros(x.size(0), self._lstm.num_layers, 1, self._lstm.hidden_size).to(x.device)
+        if self._hidden_state is None or batch_size != self._hidden_state.size(0):
+          self._hidden_state = torch.zeros(self._lstm.num_layers, batch_size, self._lstm.hidden_size).to(x.device)
+          self._cell_state = torch.zeros(self._lstm.num_layers, batch_size, self._lstm.hidden_size).to(x.device)
 
         out, (hx, cx) = self._lstm(x, (self._hidden_state, self._cell_state))
-        self._hidden_state.copy_(hx)
-        self._cell_state.copy_(cx)
+        self._hidden_state = hx.detach()
+        self._cell_state = cx.detach()
       else:
         out, (_, _) = self._lstm(x)
 
