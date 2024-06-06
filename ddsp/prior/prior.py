@@ -167,7 +167,7 @@ class Prior(L.LightningModule):
       y_hat = self(x)
       losses.append(self._loss(y_hat, y))
       x = y_hat.unsqueeze(1)
-      y = sequence[:, self.sequence_length + i, :]
+      y = sequence[:, self.sequence_length + i + 1, :]
 
     self._streaming = preserve_streaming
     return torch.mean(torch.stack(losses))
