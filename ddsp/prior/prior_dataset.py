@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 from torch import jit
 import torch
+import torchaudio
 
 import librosa as li
 from glob import glob
@@ -95,9 +96,13 @@ class PriorDataset(Dataset):
     self._encodings = self._encode_audio_dataset(audio)
     self.max_value = self._encodings.max().item()
     self.min_value = self._encodings.min().item()
+    # self.max_value = self._encodings.quantile(0.95).item()
+    # self.min_value = self._encodings.quantile(0.05).item()
+
 
   def __len__(self) -> int:
     return len(self._encodings) - self._sequence_length - 1
+
 
   def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -152,6 +157,7 @@ class PriorDataset(Dataset):
       x = self._load_audio_file(filepath)
       audio = torch.concat([audio, torch.from_numpy(x)], dim = 0)
     return audio.to(self._device)
+
 
   def _load_audio_file(self, path: str):
     """

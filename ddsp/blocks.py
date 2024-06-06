@@ -7,7 +7,7 @@ from torchaudio.transforms import MFCC
 
 from typing import Tuple, List
 
-def _make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
+def make_mlp(in_size: int, hidden_layers: int, hidden_size: int) -> cc.CachedSequential:
   """
   Constructs a multi-layer perceptron.
   Args:
@@ -185,7 +185,7 @@ class Decoder(nn.Module):
     self.register_buffer('_hidden_state', torch.zeros(1, 1, hidden_size), persistent=False)
 
     # Intermediary 3-layer MLP
-    self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
+    self.inter_mlp = make_mlp(hidden_size, output_mlp_layers, hidden_size)
 
     # Output layer predicting noiseband amplitudes, and sine frequencies and amplitudes
     self.output_params = nn.Linear(hidden_size, n_bands + n_sines * 2)
