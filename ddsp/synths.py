@@ -83,6 +83,7 @@ class NoiseBandSynth(BaseSynth):
     """Delegate the noisebands to the filterbank object."""
     return self._filterbank.noisebands
 
+
 class SineSynth(BaseSynth):
   """
   Mixture of sinweaves synthesiser.
@@ -161,3 +162,33 @@ class SineSynth(BaseSynth):
     batch_size = signal.shape[0]
     for i in range(batch_size):
       torchaudio.save(f"{i}-{audiofile}", signal[i], self._fs)
+
+class HarmonicSynth(SineSynth):
+  """
+  Mixture of harmonics synthesiser.
+  """
+  def __init__(self, fs: int = 44100, n_harmonics: int = 500, resampling_factor: int = 32):
+    super().__init__()
+    self._fs = fs
+    self._n_harmonics = n_harmonics
+    self._resampling_factor = resampling_factor
+
+  def __call__(self, fundamental: torch.Tensor, amplitudes: torch.Tensor) -> torch.Tensor:
+    """
+    Generates a mixture of harmonics with the given fundamental frequency and amplitudes per sample.
+
+    Arguments:
+      - fundamental: torch.Tensor[batch_size, n_samples], the fundamental frequencies
+      - amplitudes: torch.Tensor[batch_size, n_harmonics, n_samples], the amplitudes of the harmonics
+    """
+    # Upsample from the internal sampling rate to the target sampling rate
+    fundamental = F.interpolate(fundamental.unsqueeze(1), scale_factor=float(self._resampling_factor), mode='linear')
+    amplitudes = F.interpolate(amplitudes, scale_factor=float(self._resampling_factor), mode='linear')
+
+    # Calculate the harmonic frequencies
+    harmonics = torch.arange(1, self._n_harmonics + 1, device=fundamental.device).reshape(1, -1, 1)
+    frequencies = fundamental * harmonics
+
+    # Generate the sinewaves
+    return super().__call__(frequencies, amplitudes)
+

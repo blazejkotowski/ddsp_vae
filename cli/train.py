@@ -20,7 +20,7 @@ if __name__ == '__main__':
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--n_band', type=int, default=512, help='Number of bands of the filter bank')
-  parser.add_argument('--n_sines', type=int, default=500, help='Number of sines to synthesise')
+  parser.add_argument('--n_harmonics', type=int, default=500, help='Number of sines to synthesise')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--encoder_ratios', type=int, nargs='+', default=[8, 4, 2], help='Capacity ratios for the encoder')
   parser.add_argument('--decoder_ratios', type=int, nargs='+', default=[2, 4, 8], help='Capacity ratios for the decoder')
@@ -63,7 +63,7 @@ if __name__ == '__main__':
   # Core model
   ddsp = DDSP(
     n_filters=config.n_band,
-    n_sines=config.n_sines,
+    n_harmonics=config.n_harmonics,
     latent_size=config.latent_size,
     fs=config.fs,
     encoder_ratios=config.encoder_ratios,
