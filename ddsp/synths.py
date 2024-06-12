@@ -167,8 +167,8 @@ class HarmonicSynth(SineSynth):
   """
   Mixture of harmonics synthesiser.
   """
-  def __init__(self, fs: int = 44100, n_harmonics: int = 500, resampling_factor: int = 32):
-    super().__init__()
+  def __init__(self, fs: int = 44100, n_harmonics: int = 500, resampling_factor: int = 32, streaming: bool = False):
+    super().__init__(n_sines=n_harmonics, fs=fs, resampling_factor=resampling_factor, streaming=streaming)
     self._fs = fs
     self._n_harmonics = n_harmonics
     self._resampling_factor = resampling_factor
