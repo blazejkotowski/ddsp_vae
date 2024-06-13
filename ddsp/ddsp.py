@@ -136,7 +136,7 @@ class DDSP(L.LightningModule):
     self.log("kld_loss", losses["kld_loss"], prog_bar=True, logger=True)
     self.log("train_loss", losses["loss"], prog_bar=True, logger=True)
     self.log("beta", self._beta, prog_bar=True, logger=True)
-    self.log("lr", self.trainer.lr_schedulers[0].get_last_lr().item(), prog_bar=True, logger=True)
+    self.log("lr", self.trainer.lr_scheduler_configs[0].scheduler.get_last_lr()[0], prog_bar=True, logger=True)
 
     return losses["loss"]
 
