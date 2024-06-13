@@ -181,13 +181,9 @@ class HarmonicSynth(SineSynth):
       - fundamental: torch.Tensor[batch_size, n_samples], the fundamental frequencies
       - amplitudes: torch.Tensor[batch_size, n_harmonics, n_samples], the amplitudes of the harmonics
     """
-    # Upsample from the internal sampling rate to the target sampling rate
-    fundamental = F.interpolate(fundamental.unsqueeze(1), scale_factor=float(self._resampling_factor), mode='linear')
-    amplitudes = F.interpolate(amplitudes, scale_factor=float(self._resampling_factor), mode='linear')
-
     # Calculate the harmonic frequencies
     harmonics = torch.arange(1, self._n_harmonics + 1, device=fundamental.device).reshape(1, -1, 1)
-    frequencies = fundamental * harmonics
+    frequencies = fundamental.unsqueeze(1) * harmonics
 
     # Generate the sinewaves
     return super().__call__(frequencies, amplitudes)
