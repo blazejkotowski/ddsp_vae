@@ -66,7 +66,7 @@ class VariationalEncoder(nn.Module):
                sample_rate: int = 44100,
                layer_sizes: List[int] = [128, 64, 32],
                latent_size: int = 16,
-               downsample_factor: int = 32,
+               resampling_factor: int = 32,
                n_mfcc: int = 30,
                streaming: bool = False):
     """
@@ -81,7 +81,7 @@ class VariationalEncoder(nn.Module):
     super().__init__()
     self.streaming = streaming
 
-    self.downsample_factor = downsample_factor
+    self.resampling_factor = resampling_factor
     self.mfcc = MFCC(sample_rate = sample_rate, n_mfcc = n_mfcc)
 
     self.normalization = nn.LayerNorm(n_mfcc)
@@ -109,7 +109,7 @@ class VariationalEncoder(nn.Module):
     mfcc = F.interpolate(mfcc, size = audio.shape[-1], mode = 'nearest')
 
     # Downsample the MFCCs
-    x = F.interpolate(mfcc, scale_factor = 1/self.downsample_factor, mode = 'linear')
+    x = F.interpolate(mfcc, scale_factor = 1/self.resampling_factor, mode = 'linear')
 
     # Reshape to [batch_size, signal_length, n_mfcc]
     x = x.permute(0, 2, 1)
@@ -155,24 +155,22 @@ class VariationalEncoder(nn.Module):
 
 class Decoder(nn.Module):
   def __init__(self,
-               n_bands: int = 512,
-               n_harmonics: int = 500,
                latent_size: int = 16,
+               n_parameters: int = 512,
                layer_sizes: List[int] = [32, 64, 128],
                output_mlp_layers: int = 3,
                streaming: bool = False):
     """
     Arguments:
-      - n_bands: int, the number of noise bands
       - latent_size: int, the size of the latent space
+      - n_parameters: int, the number of parameters to predict (output)
       - layer_sizes: List[int], the sizes of the layers in the bottleneck
       - output_mlp_layers: int, the number of layers in the output MLP
       - streaming: bool, streaming mode (realtime)
     """
     super().__init__()
 
-    self.n_bands = n_bands
-    self.n_harmonics = n_harmonics
+    self.n_parameters = n_parameters
     self.streaming = streaming
 
     # MLP mapping from the latent space
@@ -188,7 +186,7 @@ class Decoder(nn.Module):
     self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
 
     # Output layer predicting noiseband amplitudes, fundamental frequency and harmonic amplitudes of harmonics synth
-    self.output_params = nn.Linear(hidden_size, n_bands + n_harmonics + 1)
+    self.output_params = nn.Linear(hidden_size, n_parameters)
 
 
   def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -217,8 +215,4 @@ class Decoder(nn.Module):
     # Pass through the output layer
     output = _scaled_sigmoid(self.output_params(x))
 
-    noiseband_amps = output[..., :self.n_bands].permute(0, 2, 1)
-    harmonic_funds = output[..., self.n_bands]
-    harmonic_amps = output[..., self.n_bands + 1:].permute(0, 2, 1)
-
-    return noiseband_amps, harmonic_funds, harmonic_amps
+    return output

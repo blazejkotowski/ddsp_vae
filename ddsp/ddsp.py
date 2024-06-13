@@ -5,7 +5,7 @@ import numpy as np
 import auraloss
 
 from ddsp.blocks import VariationalEncoder, Decoder
-from ddsp.synths import SineSynth, NoiseBandSynth, HarmonicSynth
+from ddsp.synths import SineSynth, NoiseBandSynth, HarmonicSynth, BaseSynth, SynthRegister
 
 from typing import List, Tuple, Dict
 
@@ -28,8 +28,8 @@ class DDSP(L.LightningModule):
     - kld_weight: float, the weight for the KLD loss
   """
   def __init__(self,
-               n_filters: int = 2048,
-               n_harmonics: int = 500,
+              #  n_filters: int = 2048,
+              #  n_harmonics: int = 500,
                latent_size: int = 16,
                fs: int = 44100,
                encoder_ratios: List[int] = [8, 4, 2],
@@ -43,14 +43,14 @@ class DDSP(L.LightningModule):
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
     self.fs = fs
+    self.latent_size = latent_size
+    self._streaming = streaming
 
-    # Noisebands synthesiserg
-    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)
+    self._decoder_ratios = decoder_ratios
+    self._resampling_factor = resampling_factor
+    self._capacity = capacity
 
-    # Sine synthesiser
-    # self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=resampling_factor, streaming=streaming)
-
-    self._harmonic_synth = HarmonicSynth(n_harmonics=n_harmonics, fs=fs, resampling_factor=resampling_factor)
+    self._synths = SynthRegister()
 
     # ELBO regularization params
     self._beta = 0
@@ -63,15 +63,7 @@ class DDSP(L.LightningModule):
       sample_rate=fs,
       latent_size=latent_size,
       streaming=streaming,
-    )
-
-    ## Decoder to predict the amplitudes of the noise bands
-    self.decoder = Decoder(
-      latent_size=latent_size,
-      layer_sizes=(np.array(decoder_ratios)*capacity).tolist(),
-      n_bands=n_filters,
-      streaming=streaming,
-      n_harmonics=n_harmonics,
+      resampling_factor=resampling_factor
     )
 
     # Define the loss
@@ -84,6 +76,32 @@ class DDSP(L.LightningModule):
     self._last_validation_in = None
     self._last_validation_out = None
     self._validation_index = 1
+
+
+  def add_synth(self, synth_type: str, **synth_kwargs):
+    """Add a synthesiser to the model"""
+    synth = None # for torchscript
+
+    if synth_type == 'noisebandnet':
+      synth = NoiseBandSynth(fs=self.fs, resampling_factor=self._resampling_factor, **synth_kwargs)
+    elif synth_type == 'harmonic':
+      synth = HarmonicSynth(fs=self.fs, resampling_factor=self._resampling_factor, streaming=self._streaming, **synth_kwargs)
+    elif synth_type == 'sine':
+      synth = SineSynth(fs=self.fs, resampling_factor=self._resampling_factor, streaming=self._streaming, **synth_kwargs)
+    else:
+      raise ValueError(f"Unknown synth type: {synth_type}")
+
+    self._synths.register(synth)
+
+
+  def build(self):
+    """Build the model"""
+    self.decoder = Decoder(
+      latent_size=self.latent_size,
+      layer_sizes=(np.array(self._decoder_ratios)*self._capacity).tolist(),
+      streaming=self._streaming,
+      n_parameters=self._synths.total_params,
+    )
 
 
   def forward(self, audio: torch.Tensor) -> torch.Tensor:
@@ -118,6 +136,7 @@ class DDSP(L.LightningModule):
     self.log("kld_loss", losses["kld_loss"], prog_bar=True, logger=True)
     self.log("train_loss", losses["loss"], prog_bar=True, logger=True)
     self.log("beta", self._beta, prog_bar=True, logger=True)
+    self.log("lr", self.trainer.lr_schedulers[0].get_last_lr().item(), prog_bar=True, logger=True)
 
     return losses["loss"]
 
@@ -156,7 +175,7 @@ class DDSP(L.LightningModule):
     synth_params = self.decoder(z)
 
     # Synthesize the output signal
-    y_audio = self._synthesize(*synth_params)
+    y_audio = self._synthesize(synth_params)
 
     # Compute the reconstruction loss
     recons_loss = self._recons_loss(y_audio, x_audio)
@@ -196,22 +215,33 @@ class DDSP(L.LightningModule):
 
   def configure_optimizers(self):
     """Configure the optimizer for the model"""
-    return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+    optimizer = torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
+    return {
+      "optimizer": optimizer,
+      "lr_scheduler": {
+        "scheduler": scheduler,
+        "monitor": "train_loss",
+        "interval": "step"
+      }
+    }
 
 
-  def _synthesize(self, noiseband_amps: torch.Tensor, harmonic_funds: torch.Tensor, harmonic_amps: torch.Tensor) -> torch.Tensor:
+  def _synthesize(self, synth_params: torch.Tensor) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
-      - noiseband_amps: torch.Tensor[batch_size, n_bands, sig_length], the predicted amplitudes of the noise bands
-      - harmonic_funds: torch.Tensor[batch_size, n_sines, sig_length], the predicted frequencies of the sines
-      - sine_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the sines
+      - synth_params: torch.Tensor[batch_size, n_parameters, sig_length], the predicted amplitudes of the noise bands
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
-    sines = self._harmonic_synth(harmonic_funds, harmonic_amps)
-    noisebands = self._noisebands_synth(noiseband_amps)
-    return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
+    # Synthesise signal synth by synth
+    signals = []
+    for synth, params in zip(self._synths, self._synths.split_params(synth_params)):
+      params = [param.permute(0, 2, 1) for param in params]
+      signals.append(synth(*params))
+
+    return torch.sum(torch.hstack(signals), dim=1, keepdim=True)
 
 
   @torch.jit.ignore

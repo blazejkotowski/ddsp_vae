@@ -6,6 +6,8 @@ import torch.nn.functional as F
 
 from ddsp.filterbank import FilterBank
 
+from typing import Dict, List
+
 class BaseSynth(nn.Module):
   """
   Base class for synthesizers.
@@ -22,6 +24,17 @@ class BaseSynth(nn.Module):
   def __call__(self, *args, **kwargs):
     raise NotImplementedError
 
+  @property
+  def call_params(self) -> Dict[str, int]:
+    """Returns number of predictable parameters of the synth."""
+    raise NotImplementedError
+
+  @property
+  def total_params(self) -> int:
+    """Returns the total number of parameters of the synth."""
+    return sum(self.call_params.values())
+
+
 class NoiseBandSynth(BaseSynth):
   """
   A synthesiser that generates a mixture noise bands from amplitudes.
@@ -35,8 +48,9 @@ class NoiseBandSynth(BaseSynth):
   def __init__(self, n_filters: int = 2048, fs: int = 44100, resampling_factor: int = 32):
     super().__init__()
     self._resampling_factor = resampling_factor
+    self._n_filters = n_filters
 
-
+    # Create the filterbank
     self._filterbank = FilterBank(
       n_filters=n_filters,
       fs=fs
@@ -83,6 +97,11 @@ class NoiseBandSynth(BaseSynth):
     """Delegate the noisebands to the filterbank object."""
     return self._filterbank.noisebands
 
+  @property
+  def call_params(self) -> Dict[str, int]:
+    return {
+      'amplitudes': self._n_filters
+    }
 
 class SineSynth(BaseSynth):
   """
@@ -105,6 +124,7 @@ class SineSynth(BaseSynth):
     self._resampling_factor = resampling_factor
     self._phases = None
     self._streaming = streaming
+
 
   def __call__(self, frequencies: torch.Tensor, amplitudes: torch.Tensor):
     """
@@ -163,6 +183,23 @@ class SineSynth(BaseSynth):
     for i in range(batch_size):
       torchaudio.save(f"{i}-{audiofile}", signal[i], self._fs)
 
+
+  @property
+  def parameters_size(self) -> int:
+    """
+    For each sine wave, we have two parameters: frequency and amplitude.
+    """
+    return self._n_sines * 2
+
+  @property
+  def call_params(self) -> Dict[str, int]:
+    return {
+      'frequencies': self._n_sines,
+      'amplitudes': self._n_sines
+    }
+
+
+
 class HarmonicSynth(SineSynth):
   """
   Mixture of harmonics synthesiser.
@@ -172,6 +209,7 @@ class HarmonicSynth(SineSynth):
     self._fs = fs
     self._n_harmonics = n_harmonics
     self._resampling_factor = resampling_factor
+
 
   def __call__(self, fundamental: torch.Tensor, amplitudes: torch.Tensor) -> torch.Tensor:
     """
@@ -183,8 +221,49 @@ class HarmonicSynth(SineSynth):
     """
     # Calculate the harmonic frequencies
     harmonics = torch.arange(1, self._n_harmonics + 1, device=fundamental.device).reshape(1, -1, 1)
-    frequencies = fundamental.unsqueeze(1) * harmonics
+    frequencies = fundamental * harmonics
 
     # Generate the sinewaves
     return super().__call__(frequencies, amplitudes)
 
+
+  @property
+  def call_params(self) -> Dict[str, int]:
+    return {
+      'fundamental': 1,
+      'amplitudes': self._n_harmonics
+    }
+
+
+
+class SynthRegister(object):
+  def __init__(self):
+    self._synths = []
+
+  def register(self, synth: BaseSynth):
+    self._synths.append(synth)
+
+  @property
+  def total_params(self) -> int:
+    return sum([synth.total_params for synth in self._synths])
+
+  def split_params(self, params: torch.Tensor) -> List:
+    """
+    Splits params into chunks for each synth.
+
+    Args:
+      - params: torch.Tensor[batch_size, total_params], the parameters to split
+    Returns:
+      - params_list: List[Tuple[torch.Tensor]], the list of parameters for each synth
+    """
+    params_list = []
+    params_offset = 0
+    for synth in self._synths:
+      synth_params = params[:, :, params_offset:params_offset+synth.total_params]
+      synth_params = torch.split(synth_params, tuple(synth.call_params.values()), dim=-1)
+      params_list.append(synth_params)
+
+    return params_list
+
+  def __getitem__(self, index: int) -> BaseSynth:
+    return self._synths[index]

@@ -62,8 +62,6 @@ if __name__ == '__main__':
 
   # Core model
   ddsp = DDSP(
-    n_filters=config.n_band,
-    n_harmonics=config.n_harmonics,
     latent_size=config.latent_size,
     fs=config.fs,
     encoder_ratios=config.encoder_ratios,
@@ -73,6 +71,10 @@ if __name__ == '__main__':
     learning_rate=config.lr,
     kld_weight=config.kld_weight,
   )
+
+  ddsp.add_synth('noisebandnet', n_filters=config.n_band)
+  ddsp.add_synth('harmonic', n_harmonics=config.n_harmonics)
+  ddsp.build()
 
   # Tensorboard
   tb_logger = TensorBoardLogger(config.training_dir, name=config.model_name)
