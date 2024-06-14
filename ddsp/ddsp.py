@@ -37,7 +37,7 @@ class DDSP(L.LightningModule):
                capacity: int = 64,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
-               kld_weight: float = 0.00025,
+               kld_weight: float = 0.001,
                streaming: bool = False):
     super().__init__()
     # Save hyperparameters in the checkpoints
