@@ -39,7 +39,7 @@ The model is compatibile with nn~ externals for Max/MSP and PureData. In order t
 ### Model export
 In order to export the model to be used with nn~ externals, run:
 ```bash
-python cli/export.py --model_path <path_to_model> --output_dir <path_to_output_dir>
+python cli/export.py --model_directory <path_to_model_training> --output_dir <path_to_output_dir>
 ```
 
 
