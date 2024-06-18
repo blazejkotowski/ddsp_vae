@@ -32,8 +32,8 @@ def convert_to_wav(input_dir, output_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Convert audio files to 44100 Hz, mono, 16-bit WAV format.')
-    parser.add_argument('input_dir', type=str, help='Input directory containing audio files')
-    parser.add_argument('output_dir', type=str, help='Output directory for converted audio files')
+    parser.add_argument('--input_dir', type=str, help='Input directory containing audio files')
+    parser.add_argument('--output_dir', type=str, help='Output directory for converted audio files')
 
     args = parser.parse_args()
 
