@@ -28,7 +28,7 @@ if __name__ == '__main__':
   parser.add_argument('--latent_size', type=int, default=16, help='Dimensionality of the latent space')
   parser.add_argument('--audio_chunk_duration', type=float, default=1.5, help='Duration of the audio chunks in seconds')
   parser.add_argument('--resampling_factor', type=int, default=32, help='Resampling factor for the control signal and noise bands')
-  parser.add_argument('--mixed_precision', type=bool, default=False, help='Use mixed precision')
+  parser.add_argument('--mixed_precision', type=bool, default=True, help='Use mixed precision')
   parser.add_argument('--training_dir', type=str, default='training', help='Directory to save the training logs')
   parser.add_argument('--model_name', type=str, default='ddsp', help='Name of the model')
   parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs')

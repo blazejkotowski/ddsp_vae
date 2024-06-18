@@ -43,6 +43,7 @@ class DDSP(L.LightningModule):
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
     self.fs = fs
+    self.latent_size = latent_size
 
     # Noisebands synthesiserg
     self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)

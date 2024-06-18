@@ -1,12 +1,12 @@
 # VAE-controlled DDSP
-This project is a pytorch implementation of DDSP based on the paper [DDSP: Differentiable Digital Signal Processing](https://arxiv.org/abs/2001.04643), customised for the generation of environmental sound.
+This project is a pytorch implementation of DDSP based on the paper [DDSP: Differentiable Digital Signal Processing](https://arxiv.org/abs/2001.04643), customised for the generation of environmental sound, with the control of the generation process based on the latent variables of a Variational Autoencoder.
 
 The important differences include:
-- latent space is regularised with a VAE loss and there is no explicit features extraction block. Therefore the control of generation is based on latent variables.
+- latent space is regularised with a VAE loss and there is no explicit features extraction block. Therefore the control of generation is based solely on latent variables.
 - the residual part is based on [NoiseBandNet](https://arxiv.org/abs/2307.08007) instead of a simple noise generator.
 - sinusoidal modeling is used instead of the harmonic one for modeling of the tonal component.
 
-## Installaation
+## Installation
 Clone the repository and install the package locally with pip:
 ```bash
 pip install -r requirements.txt
@@ -43,3 +43,5 @@ python cli/export.py --model_directory <path_to_model_training> --output_dir <pa
 ```
 
 
+## Colab Notebook
+The project is also available as this [colab notebook](https://colab.research.google.com/drive/1otNApPfqy9DcbyX1Jaxu1Xc1AR9RrEzT#scrollTo=ABldwFMwll7j).
