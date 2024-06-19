@@ -95,7 +95,17 @@ class DDSP(L.LightningModule):
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
-    signal, _ = self._autoencode(audio, compute_loss=False)
+    # signal, _ = self._autoencode(audio, compute_loss=False)
+    mu, scale = self.encoder(audio)
+
+    # Reparametrization trick
+    z, _ = self.encoder.reparametrize(mu, scale)
+
+    # Predict the parameters of the synthesiser and synthesize
+    synth_params = self.decoder(z)
+    signal = self._synthesize(*synth_params)
+
+
     return signal
 
 
@@ -150,10 +160,10 @@ class DDSP(L.LightningModule):
       - losses: Dict[str, torch.Tensor], the losses computed during the autoencoding
     """
     # Initialise for torchscript
-    kld_loss = None
-    ar_loss = None
-    recons_loss = None
-    loss = None
+    kld_loss = torch.zeros(1)
+    ar_loss = torch.zeros(1)
+    recons_loss = torch.zeros(1)
+    loss = torch.zeros(1)
 
     # Encode the audio signal
     mu, scale = self.encoder(x_audio)
@@ -186,6 +196,7 @@ class DDSP(L.LightningModule):
     }
 
     return y_audio, losses
+
 
 
   def on_validation_epoch_end(self):
@@ -227,6 +238,7 @@ class DDSP(L.LightningModule):
     noisebands = self._noisebands_synth(noiseband_amps)
     return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
 
+  @torch.jit.ignore
   def _attribute_regularization(self, z: torch.Tensor, y_audio: torch.Tensor, dimension_id: int = 0) -> torch.Tensor:
     """
     Compute the attribute regularization loss.

@@ -19,7 +19,7 @@ class BaseSynth(nn.Module):
     self._fs = fs
     self._resampling_factor = resampling_factor
 
-  def __call__(self, *args, **kwargs):
+  def forward(self, *args, **kwargs):
     raise NotImplementedError
 
 class NoiseBandSynth(BaseSynth):
@@ -46,7 +46,7 @@ class NoiseBandSynth(BaseSynth):
     self._noisebands_shift = 0
 
 
-  def __call__(self, amplitudes: torch.Tensor) -> torch.Tensor:
+  def forward(self, amplitudes: torch.Tensor) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
@@ -105,7 +105,7 @@ class SineSynth(BaseSynth):
     self._phases = None
     self._streaming = streaming
 
-  def __call__(self, frequencies: torch.Tensor, amplitudes: torch.Tensor):
+  def forward(self, frequencies: torch.Tensor, amplitudes: torch.Tensor):
     """
     Generates a mixture of sinewaves with the given frequencies and amplitudes per sample.
 
