@@ -93,7 +93,14 @@ class DDSP(L.LightningModule):
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
-    signal, _ = self._autoencode(audio)
+    mu, scale = self.encoder(audio)
+
+    # Reparametrization trick
+    z, _ = self.encoder.reparametrize(mu, scale)
+
+    # Predict the parameters of the synthesiser and synthesize
+    synth_params = self.decoder(z)
+    signal = self._synthesize(*synth_params)
     return signal
 
 

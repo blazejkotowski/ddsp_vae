@@ -123,7 +123,7 @@ if __name__ == '__main__':
     ).save(config.output_path)
   elif format == 'ts':
     ddsp._trainer = L.Trainer() # ugly workaround
-    ddsp.recons_loss = None # for the torchscript
+    ddsp._recons_loss = None # for the torchscript
     ddsp.eval()
     scripted = ScriptedDDSP(ddsp).to('cpu')
     scripted.export_to_ts(config.output_path)
