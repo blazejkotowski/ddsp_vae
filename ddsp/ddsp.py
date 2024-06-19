@@ -44,12 +44,13 @@ class DDSP(L.LightningModule):
     self.save_hyperparameters()
     self.fs = fs
     self.latent_size = latent_size
+    self.resampling_factor = resampling_factor
 
     # Noisebands synthesiserg
-    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)
+    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=self.resampling_factor)
 
     # Sine synthesiser
-    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=resampling_factor, streaming=streaming)
+    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=self.resampling_factor, streaming=streaming)
 
     # ELBO regularization params
     self._beta = 0
