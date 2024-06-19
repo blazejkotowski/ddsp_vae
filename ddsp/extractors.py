@@ -1,6 +1,9 @@
 import torch
 import librosa
+
 import torch.nn.functional as F
+
+from essentia.standard import TensorflowPredictVGGish, TensorflowPredict2D
 
 
 class BaseExtractor(object):
@@ -113,3 +116,19 @@ class LoudnessExtractor(BaseExtractor):
     loudness = F.interpolate(loudness.unsqueeze(0), size=audio.shape[-1], mode='linear').squeeze(0)
 
     return loudness.unsqueeze(-1)
+
+class ValenceArousalExtractor(BaseExtractor):
+  """
+  Extracts emotional valence and arousal with the use of essentia models
+  """
+
+  def _calculate(self, audio: torch.Tensor) -> torch.Tensor:
+    embedding_model = TensorflowPredict2D(graphFilename='../vendor_models/vggish/audioset-vggish-3.pb', output="model/vggish/embeddings")
+    embeddings = embedding_model(audio)
+
+    model = TensorflowPredict2D(graphFilename="../vendor_models/emomusic-audioset-vggish-2.pb", output="model/Identity")
+    pred = model(embeddings)
+
+    breakpoint()
+
+    return F.interpolate(pred, size=audio.shape[-1], mode='linear').squeeze(0)

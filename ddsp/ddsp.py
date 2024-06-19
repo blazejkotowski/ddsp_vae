@@ -6,7 +6,7 @@ import auraloss
 
 from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.synths import SineSynth, NoiseBandSynth
-from ddsp.extractors import SpectralCentroidExtractor
+from ddsp.extractors import SpectralCentroidExtractor, ValenceArousalExtractor
 
 from typing import List, Tuple, Dict
 
@@ -95,7 +95,7 @@ class DDSP(L.LightningModule):
     Returns:
       - signal: torch.Tensor, the synthesized signal
     """
-    signal, _ = self._autoencode(audio)
+    signal, _ = self._autoencode(audio, compute_loss=False)
     return signal
 
 
@@ -139,15 +139,22 @@ class DDSP(L.LightningModule):
     return y_audio
 
 
-  def _autoencode(self, x_audio: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+  def _autoencode(self, x_audio: torch.Tensor, compute_loss: bool = True) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Autoencode the audio signal
     Args:
       - x_audio: torch.Tensor[batch_size, n_signal], the input audio signal
+      - compute_loss: bool, whether to compute the loss
     Returns:
       - y_audio: torch.Tensor[batch_size, n_signal], the autoencoded audio signal
       - losses: Dict[str, torch.Tensor], the losses computed during the autoencoding
     """
+    # Initialise for torchscript
+    kld_loss = None
+    ar_loss = None
+    recons_loss = None
+    loss = None
+
     # Encode the audio signal
     mu, scale = self.encoder(x_audio)
 
@@ -160,14 +167,15 @@ class DDSP(L.LightningModule):
     # Synthesize the output signal
     y_audio = self._synthesize(*synth_params)
 
-    # Compute the reconstruction loss
-    recons_loss = self._recons_loss(y_audio, x_audio)
+    if compute_loss:
+      # Compute the reconstruction loss
+      recons_loss = self._recons_loss(y_audio, x_audio)
 
-    # Compute the argument regularization loss
-    ar_loss = self._attribute_regularization(z, y_audio, 0)
+      # Compute the argument regularization loss
+      ar_loss = self._attribute_regularization(z, y_audio, 0)
 
-    # Compute the total loss with β parameter
-    loss = recons_loss + self._kld_weight * self._beta * kld_loss + ar_loss
+      # Compute the total loss with β parameter
+      loss = recons_loss + self._kld_weight * self._beta * kld_loss + ar_loss
 
     # Construct losses dictionary
     losses = {
@@ -242,6 +250,7 @@ class DDSP(L.LightningModule):
 
     # distance for selected attribute values
     attribute_values = self._calculate_attribute(y_audio)
+    self._calculate_valence_arousal(y_audio)
     attribute_distance = distance_matrix(attribute_values)
 
     # Compute the mae loss between the latent distance and attribute distance
@@ -249,6 +258,21 @@ class DDSP(L.LightningModule):
 
     return loss
 
+  @torch.jit.ignore
+  def _calculate_valence_arousal(self, audio: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the valence regularization loss.
+
+    Args:
+      - audio: torch.Tensor[batch_size, n_signal], the input audio signal
+    Returns:
+      - valence_arousal: torch.Tensor[batch_size, 2, n_signal], the valence and arousal of the audio signal
+    """
+    extractor = ValenceArousalExtractor()
+    preds = extractor(audio.cpu().detach())
+    return preds.to(audio.device)
+
+  @torch.jit.ignore
   def _calculate_attribute(self, audio: torch.Tensor) -> torch.Tensor:
     """
     Calculate the attribute of the audio signal
