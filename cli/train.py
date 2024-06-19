@@ -16,7 +16,7 @@ from ddsp.utils import find_checkpoint
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds')
-  parser.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu'])
+  parser.add_argument('--device', help='Device to use', default='cuda', choices=['cuda', 'cpu', 'mps'])
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--n_band', type=int, default=512, help='Number of bands of the filter bank')

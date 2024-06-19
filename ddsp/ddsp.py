@@ -6,6 +6,7 @@ import auraloss
 
 from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.synths import SineSynth, NoiseBandSynth
+from ddsp.extractors import SpectralCentroidExtractor
 
 from typing import List, Tuple, Dict
 
@@ -44,12 +45,13 @@ class DDSP(L.LightningModule):
     self.save_hyperparameters()
     self.fs = fs
     self.latent_size = latent_size
+    self.resampling_factor = resampling_factor
 
     # Noisebands synthesiserg
-    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=resampling_factor)
+    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=self.resampling_factor)
 
     # Sine synthesiser
-    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=resampling_factor, streaming=streaming)
+    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=self.resampling_factor, streaming=streaming)
 
     # ELBO regularization params
     self._beta = 0
@@ -116,6 +118,7 @@ class DDSP(L.LightningModule):
     self.log("recons_loss", losses["recons_loss"], prog_bar=True, logger=True)
     self.log("kld_loss", losses["kld_loss"], prog_bar=True, logger=True)
     self.log("train_loss", losses["loss"], prog_bar=True, logger=True)
+    self.log("ar_loss", losses["ar_loss"], prog_bar=True, logger=True)
     self.log("beta", self._beta, prog_bar=True, logger=True)
 
     return losses["loss"]
@@ -160,13 +163,17 @@ class DDSP(L.LightningModule):
     # Compute the reconstruction loss
     recons_loss = self._recons_loss(y_audio, x_audio)
 
-    # Compute the total loss using β parameter
-    loss = recons_loss + self._kld_weight * self._beta * kld_loss
+    # Compute the argument regularization loss
+    ar_loss = self._attribute_regularization(z, y_audio, 0)
+
+    # Compute the total loss with β parameter
+    loss = recons_loss + self._kld_weight * self._beta * kld_loss + ar_loss
 
     # Construct losses dictionary
     losses = {
       "recons_loss": recons_loss,
       "kld_loss": kld_loss,
+      "ar_loss": ar_loss,
       "loss": loss
     }
 
@@ -211,6 +218,49 @@ class DDSP(L.LightningModule):
     sines = self._sine_synth(sine_freqs, sine_amps)
     noisebands = self._noisebands_synth(noiseband_amps)
     return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
+
+  def _attribute_regularization(self, z: torch.Tensor, y_audio: torch.Tensor, dimension_id: int = 0) -> torch.Tensor:
+    """
+    Compute the attribute regularization loss.
+
+    source: Pati, A. Lerch  A, 2020, "Attribute-based Regularization of Latent
+    Spaces for Variational Auto-Encoders" https://arxiv.org/abs/2004.05485
+
+    Args:
+      - z: torch.Tensor[batch_size, latent_size], the latent variables
+      - y_audio: torch.Tensor[batch_size, n_signal], the output audio signal
+      - dimension_id: int, the id of the dimension to regularize
+    Returns:
+      - arg_reg_loss: torch.Tensor[1], the argument regularization loss
+    """
+    # self-distance matrix between the pair of values in a 1d tensor
+    distance_matrix = lambda x : x.unsqueeze(0) - x.unsqueeze(1)
+
+    # distance for latent values
+    latent_values = z[..., dimension_id]
+    latent_distance = distance_matrix(latent_values)
+
+    # distance for selected attribute values
+    attribute_values = self._calculate_attribute(y_audio)
+    attribute_distance = distance_matrix(attribute_values)
+
+    # Compute the mae loss between the latent distance and attribute distance
+    loss = torch.mean(torch.abs(torch.tanh(latent_distance) - torch.sign(attribute_distance)))
+
+    return loss
+
+  def _calculate_attribute(self, audio: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate the attribute of the audio signal
+
+    Args:
+      - audio: torch.Tensor[batch_size, n_signal], the input audio signal
+    Returns:
+      - attribute: torch.Tensor[batch_size, n_signal], the attribute of the audio signal
+    """
+    # Spectral centroid
+    extractor = SpectralCentroidExtractor(resampling_factor=self.resampling_factor)
+    return extractor(audio.cpu().detach()).to(audio.device)
 
 
   @torch.jit.ignore
