@@ -188,7 +188,7 @@ class DDSP(L.LightningModule):
       recons_loss = self._recons_loss(y_audio, x_audio)
 
       # Compute the argument regularization loss
-      ar_loss = self._attribute_regularization(z, y_audio)
+      ar_loss = self._ar_weight * self._attribute_regularization(z, y_audio)
 
       # Reference loss disregarding the β parameter
       ref_loss = recons_loss + self._kld_weight * kld_loss + ar_loss
