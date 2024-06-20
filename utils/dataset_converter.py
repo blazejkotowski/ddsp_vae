@@ -11,7 +11,7 @@ def convert_to_wav(input_dir, output_dir):
 
     # Get a list of all audio files in the input directory
     audio_files = glob(os.path.join(input_dir, '**', '*'), recursive=True)
-    audio_files = [f for f in audio_files if f.lower().endswith(('.wav', '.mp3', '.ogg', '.flac', '.aac', '.aiff'))]
+    audio_files = [f for f in audio_files if f.lower().endswith(('.wav', '.ogg', '.flac', '.aac', '.aiff'))]
 
     for audio_file in tqdm(audio_files):
         file_name = audio_file.split('/')[-1]

@@ -1,5 +1,7 @@
+import os
 import torch
 import librosa
+import numpy as np
 
 import torch.nn.functional as F
 
@@ -28,7 +30,9 @@ class BaseExtractor(object):
       - features: torch.Tensor[batch_size, n_samples, n_features], the extracted features
     """
     features = self._calculate(audio, *args)
-    return F.interpolate(features.unsqueeze(1), scale_factor=float(1/self._resampling_factor), mode='linear').squeeze(1)
+    if features.dim() == 2:
+      features = features.unsqueeze(1)
+    return F.interpolate(features, scale_factor=float(1/self._resampling_factor), mode='linear').squeeze()
 
 
   def _calculate(self, audio: torch.Tensor, *args) -> torch.Tensor:
@@ -122,13 +126,30 @@ class ValenceArousalExtractor(BaseExtractor):
   Extracts emotional valence and arousal with the use of essentia models
   """
 
+  def __init__(self, *args, **kwargs):
+    super(ValenceArousalExtractor, self).__init__(*args, **kwargs)
+
+    script_path = os.path.dirname(os.path.abspath(__file__))
+
+    embedding_model_path = os.path.abspath(os.path.join(script_path, '../vendor_models/audioset-vggish-3.pb'))
+    self._embedding_model = TensorflowPredictVGGish(graphFilename=embedding_model_path, output="model/vggish/embeddings")
+
+    emomusic_model_path = os.path.abspath(os.path.join(script_path, '../vendor_models/emomusic-audioset-vggish-2.pb'))
+    self._emomusic_model = TensorflowPredict2D(graphFilename=emomusic_model_path, output="model/Identity")
+
+
   def _calculate(self, audio: torch.Tensor) -> torch.Tensor:
-    embedding_model = TensorflowPredict2D(graphFilename='../vendor_models/vggish/audioset-vggish-3.pb', output="model/vggish/embeddings")
-    embeddings = embedding_model(audio)
 
-    model = TensorflowPredict2D(graphFilename="../vendor_models/emomusic-audioset-vggish-2.pb", output="model/Identity")
-    pred = model(embeddings)
+    embeddings = []
+    for example in audio:
+      embeddings.append(self._embedding_model(example.squeeze().numpy()))
 
-    breakpoint()
+    preds = []
+    for embedding in embeddings:
+      preds.append(self._emomusic_model(embedding))
 
-    return F.interpolate(pred, size=audio.shape[-1], mode='linear').squeeze(0)
+    preds = torch.from_numpy(np.array(preds))
+    preds = F.interpolate(preds.permute(0, 2, 1), size=audio.shape[-1], mode='linear')
+
+    return preds
+
