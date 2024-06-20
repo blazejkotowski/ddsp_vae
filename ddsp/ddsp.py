@@ -38,7 +38,8 @@ class DDSP(L.LightningModule):
                capacity: int = 64,
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
-               kld_weight: float = 0.00025,
+               kld_weight: float = 0.001,
+               ar_weight: float = 1,
                streaming: bool = False):
     super().__init__()
     # Save hyperparameters in the checkpoints
@@ -86,10 +87,11 @@ class DDSP(L.LightningModule):
     self._last_validation_out = None
     self._validation_index = 1
 
-    # Feature extractors
-    # self._emo_extractor = ValenceArousalExtractor(resampling_factor=self.resampling_factor)
-    self._feature_extractors = [LoudnessExtractor(resampling_factor=self.resampling_factor),
+    # Attribute regularization
+    self._ar_feature_extractors = [LoudnessExtractor(resampling_factor=self.resampling_factor),
                                 SpectralCentroidExtractor(resampling_factor=self.resampling_factor)]
+
+    self._ar_weight = ar_weight
 
 
   def forward(self, audio: torch.Tensor) -> torch.Tensor:
@@ -194,7 +196,7 @@ class DDSP(L.LightningModule):
     # Construct losses dictionary
     losses = {
       "recons_loss": recons_loss,
-      "kld_loss": kld_loss,
+      "kld_loss": self._kld_weight * kld_loss,
       "ar_loss": ar_loss,
       "loss": loss
     }
@@ -259,13 +261,17 @@ class DDSP(L.LightningModule):
     # Initial loss
     loss = torch.zeros(1, device = z.device)
 
+    # Ignore if the weight is 0 or no feature extractors are defined
+    if self._ar_weight == 0 or len(self._ar_feature_extractors) == 0:
+      return loss
+
     # MAE Attribute regularization loss
     mae = lambda latent_distance, attribute_distance: torch.mean(torch.abs(torch.tanh(latent_distance) - torch.sign(attribute_distance)))
     # self-distance matrix between the pair of values in a 1d tensor
     distance_matrix = lambda x : x.unsqueeze(0) - x.unsqueeze(1)
 
     # Calculate the attributes of the audio signal
-    attributes = [extractor(y_audio.detach().cpu().squeeze()).to(y_audio) for extractor in self._feature_extractors]
+    attributes = [extractor(y_audio.detach().cpu().squeeze()).to(y_audio) for extractor in self._ar_feature_extractors]
 
     # Regularize the latent dimensions according to attributes
     for dimension_id, attribute_values in enumerate(attributes):
