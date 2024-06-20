@@ -144,7 +144,7 @@ class DDSP(L.LightningModule):
     """Compute the loss for validation data"""
     y_audio, losses = self._autoencode(x_audio)
 
-    loss = losses["recons_loss"]
+    loss = losses["ref_loss"]
 
     self.log("val_loss", loss, prog_bar=False, logger=True)
 
@@ -190,6 +190,9 @@ class DDSP(L.LightningModule):
       # Compute the argument regularization loss
       ar_loss = self._attribute_regularization(z, y_audio)
 
+      # Reference loss disregarding the β parameter
+      ref_loss = recons_loss + self._kld_weight * kld_loss + ar_loss
+
       # Compute the total loss with β parameter
       loss = recons_loss + self._kld_weight * self._beta * kld_loss + ar_loss
 
@@ -198,6 +201,7 @@ class DDSP(L.LightningModule):
       "recons_loss": recons_loss,
       "kld_loss": self._kld_weight * kld_loss,
       "ar_loss": ar_loss,
+      "ref_loss": ref_loss,
       "loss": loss
     }
 

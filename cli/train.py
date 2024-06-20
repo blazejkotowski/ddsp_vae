@@ -96,7 +96,7 @@ if __name__ == '__main__':
   # Define the checkpoint callback
   checkpoint_callback = ModelCheckpoint(
       filename='best',
-      monitor='train_loss',
+      monitor='val_loss',
       mode='min',
   )
   training_callbacks.append(checkpoint_callback)
