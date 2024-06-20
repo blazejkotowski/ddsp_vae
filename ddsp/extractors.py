@@ -5,7 +5,7 @@ import numpy as np
 
 import torch.nn.functional as F
 
-from essentia.standard import TensorflowPredictVGGish, TensorflowPredict2D
+# from essentia.standard import TensorflowPredictVGGish, TensorflowPredict2D
 
 
 class BaseExtractor(object):
@@ -62,14 +62,14 @@ class PitchExtractor(BaseExtractor):
     Args:
       - audio: torch.Tensor[batch_size, n_samples], the input audio tensor
     Returns:
-      - pitches: torch.Tensor[batch_size, n_samples, 1], the extracted pitch
+      - pitches: torch.Tensor[batch_size, n_sample], the extracted pitch
     """
     # Processes the batch of audio parallely
-    pitches = librosa.yin(audio.numpy(), fmin=self._fmin, fmax=self._fmax)
+    pitches = librosa.yin(y=audio.numpy(), fmin=self._fmin, fmax=self._fmax)
     pitches = torch.tensor(pitches, dtype=torch.float32)
-    pitches = F.interpolate(pitches.unsqueeze(0), size=audio.shape[-1], mode='linear').squeeze(0)
+    pitches = F.interpolate(pitches.unsqueeze(0), size=audio.shape[-1], mode='linear')
 
-    return pitches.unsqueeze(-1)
+    return pitches
 
 
 class SpectralCentroidExtractor(BaseExtractor):
@@ -87,14 +87,14 @@ class SpectralCentroidExtractor(BaseExtractor):
     Args:
       - audio: torch.Tensor[batch_size, n_samples], the input audio tensor
     Returns:
-      - spectral_centroid: torch.Tensor[batch_size, n_samples, 1], the extracted spectral centroid
+      - spectral_centroid: torch.Tensor[batch_size, 1, n_samples], the extracted spectral centroid
     """
     # Processes the batch of audio parallely
-    spectral_centroid = librosa.feature.spectral_centroid(y=audio.squeeze().numpy())
+    spectral_centroid = librosa.feature.spectral_centroid(y=audio.numpy())
     spectral_centroid = torch.tensor(spectral_centroid, dtype=torch.float32)
-    spectral_centroid = F.interpolate(spectral_centroid, size=audio.shape[-1], mode='linear')
+    spectral_centroid = F.interpolate(spectral_centroid, size=audio.shape[-1], mode='linear').squeeze()
 
-    return spectral_centroid.squeeze()
+    return spectral_centroid
 
 
 class LoudnessExtractor(BaseExtractor):
@@ -112,44 +112,44 @@ class LoudnessExtractor(BaseExtractor):
     Args:
       - audio: torch.Tensor[batch_size, n_samples], the input audio tensor
     Returns:
-      - loudness: torch.Tensor[batch_size, n_samples, 1], the extracted loudness
+      - loudness: torch.Tensor[batch_size, 1, n_samples], the extracted loudness
     """
     # Processes the batch of audio parallely
-    loudness = librosa.feature.rms(audio.numpy())
+    loudness = librosa.feature.rms(y=audio.numpy()).squeeze()
     loudness = torch.tensor(loudness, dtype=torch.float32)
-    loudness = F.interpolate(loudness.unsqueeze(0), size=audio.shape[-1], mode='linear').squeeze(0)
+    loudness = F.interpolate(loudness.unsqueeze(0), size=audio.shape[-1], mode='linear').squeeze()
 
-    return loudness.unsqueeze(-1)
+    return loudness
 
-class ValenceArousalExtractor(BaseExtractor):
-  """
-  Extracts emotional valence and arousal with the use of essentia models
-  """
+# class ValenceArousalExtractor(BaseExtractor):
+#   """
+#   Extracts emotional valence and arousal with the use of essentia models
+#   """
 
-  def __init__(self, *args, **kwargs):
-    super(ValenceArousalExtractor, self).__init__(*args, **kwargs)
+#   def __init__(self, *args, **kwargs):
+#     super(ValenceArousalExtractor, self).__init__(*args, **kwargs)
 
-    script_path = os.path.dirname(os.path.abspath(__file__))
+#     script_path = os.path.dirname(os.path.abspath(__file__))
 
-    embedding_model_path = os.path.abspath(os.path.join(script_path, '../vendor_models/audioset-vggish-3.pb'))
-    self._embedding_model = TensorflowPredictVGGish(graphFilename=embedding_model_path, output="model/vggish/embeddings")
+#     embedding_model_path = os.path.abspath(os.path.join(script_path, '../vendor_models/audioset-vggish-3.pb'))
+#     self._embedding_model = TensorflowPredictVGGish(graphFilename=embedding_model_path, output="model/vggish/embeddings")
 
-    emomusic_model_path = os.path.abspath(os.path.join(script_path, '../vendor_models/emomusic-audioset-vggish-2.pb'))
-    self._emomusic_model = TensorflowPredict2D(graphFilename=emomusic_model_path, output="model/Identity")
+#     emomusic_model_path = os.path.abspath(os.path.join(script_path, '../vendor_models/emomusic-audioset-vggish-2.pb'))
+#     self._emomusic_model = TensorflowPredict2D(graphFilename=emomusic_model_path, output="model/Identity")
 
 
-  def _calculate(self, audio: torch.Tensor) -> torch.Tensor:
+#   def _calculate(self, audio: torch.Tensor) -> torch.Tensor:
 
-    embeddings = []
-    for example in audio:
-      embeddings.append(self._embedding_model(example.squeeze().numpy()))
+#     embeddings = []
+#     for example in audio:
+#       embeddings.append(self._embedding_model(example.squeeze().numpy()))
 
-    preds = []
-    for embedding in embeddings:
-      preds.append(self._emomusic_model(embedding))
+#     preds = []
+#     for embedding in embeddings:
+#       preds.append(self._emomusic_model(embedding))
 
-    preds = torch.from_numpy(np.array(preds))
-    preds = F.interpolate(preds.permute(0, 2, 1), size=audio.shape[-1], mode='linear')
+#     preds = torch.from_numpy(np.array(preds))
+#     preds = F.interpolate(preds.permute(0, 2, 1), size=audio.shape[-1], mode='linear')
 
-    return preds
+#     return preds
 

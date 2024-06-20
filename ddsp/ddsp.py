@@ -6,7 +6,7 @@ import auraloss
 
 from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.synths import SineSynth, NoiseBandSynth
-from ddsp.extractors import SpectralCentroidExtractor, ValenceArousalExtractor
+from ddsp.extractors import SpectralCentroidExtractor, LoudnessExtractor # ValenceArousalExtractor
 
 from typing import List, Tuple, Dict
 
@@ -87,8 +87,9 @@ class DDSP(L.LightningModule):
     self._validation_index = 1
 
     # Feature extractors
-    self._emo_extractor = ValenceArousalExtractor(resampling_factor=self.resampling_factor)
-    self._spec_centroid_extractor = SpectralCentroidExtractor(resampling_factor=self.resampling_factor)
+    # self._emo_extractor = ValenceArousalExtractor(resampling_factor=self.resampling_factor)
+    self._feature_extractors = [LoudnessExtractor(resampling_factor=self.resampling_factor),
+                                SpectralCentroidExtractor(resampling_factor=self.resampling_factor)]
 
 
   def forward(self, audio: torch.Tensor) -> torch.Tensor:
@@ -259,15 +260,14 @@ class DDSP(L.LightningModule):
     loss = torch.zeros(1, device = z.device)
 
     # MAE Attribute regularization loss
-    mae = lambda latent_distance, attribute_distqance: torch.mean(torch.abs(torch.tanh(latent_distance) - torch.sign(attribute_distance)))
+    mae = lambda latent_distance, attribute_distance: torch.mean(torch.abs(torch.tanh(latent_distance) - torch.sign(attribute_distance)))
     # self-distance matrix between the pair of values in a 1d tensor
     distance_matrix = lambda x : x.unsqueeze(0) - x.unsqueeze(1)
 
-    attributes = []
-    # attribute_values = self._calculate_attribute(y_audio)
-    preds = self._calculate_valence_arousal(y_audio)
-    valence_values, arousal_values = preds[:, 0, :], preds[:, 1 :]
-    attributes += [valence_values, arousal_values]
+    # Calculate the attributes of the audio signal
+    attributes = [extractor(y_audio.detach().cpu().squeeze()).to(y_audio) for extractor in self._feature_extractors]
+
+    # Regularize the latent dimensions according to attributes
     for dimension_id, attribute_values in enumerate(attributes):
       # distance for latent values
       latent_values = z[..., dimension_id]
@@ -283,33 +283,6 @@ class DDSP(L.LightningModule):
     loss /= len(attributes)
 
     return loss
-
-  @torch.jit.ignore
-  def _calculate_valence_arousal(self, audio: torch.Tensor) -> torch.Tensor:
-    """
-    Compute the valence regularization loss.
-
-    Args:
-      - audio: torch.Tensor[batch_size, n_signal], the input audio signal
-    Returns:
-      - valence_arousal: torch.Tensor[batch_size, 2, n_signal], the valence and arousal of the audio signal
-    """
-    preds = self._emo_extractor(audio.cpu().detach()).to(audio.device)
-    return preds
-
-
-  @torch.jit.ignore
-  def _calculate_attribute(self, audio: torch.Tensor) -> torch.Tensor:
-    """
-    Calculate the attribute of the audio signal
-
-    Args:
-      - audio: torch.Tensor[batch_size, n_signal], the input audio signal
-    Returns:
-      - attribute: torch.Tensor[batch_size, n_signal], the attribute of the audio signal
-    """
-    # Spectral centroid
-    return self._spec_centroid_extractor(audio.cpu().detach()).to(audio.device)
 
 
   @torch.jit.ignore
