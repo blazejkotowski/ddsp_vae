@@ -121,7 +121,7 @@ if __name__ == '__main__':
   )
 
   # Try to find previously trained checkpoint
-  ckpt_path = find_checkpoint(training_path, return_none=True) if not config.force_restart else None
+  ckpt_path = find_checkpoint(training_path, return_none=True, typ='last') if not config.force_restart else None
   if ckpt_path is not None:
     print(f"Resuming from checkpoint: {ckpt_path}")
 
