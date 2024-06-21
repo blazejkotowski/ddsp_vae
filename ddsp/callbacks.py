@@ -1,4 +1,5 @@
 import lightning as L
+from typing import Any
 
 class BetaWarmupCallback(L.Callback):
   """
@@ -14,7 +15,7 @@ class BetaWarmupCallback(L.Callback):
     self.end_steps = end_steps
     self.beta = beta
 
-  def on_train_batch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+  def on_train_batch_start(self, trainer: L.Trainer, pl_module: L.LightningModule, batch: Any, batch_idx: int) -> None:
     current_step = trainer.global_step
     if current_step < self.start_steps:
       beta = 0.0
@@ -40,7 +41,7 @@ class CyclicalBetaWarmupCallback(L.Callback):
     self.cycle_duration = cycle_duration
     self._beta = beta
 
-  def on_train_batch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+  def on_train_batch_start(self, trainer: L.Trainer, pl_module: L.LightningModule, batch: Any, batch_idx: int) -> None:
     current_epoch = trainer.current_epoch
     if current_epoch < self.start_epoch:
       beta = 0.0
