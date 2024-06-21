@@ -14,7 +14,7 @@ class BetaWarmupCallback(L.Callback):
     self.end_steps = end_steps
     self.beta = beta
 
-  def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+  def on_train_batch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
     current_step = trainer.global_step
     if current_step < self.start_steps:
       beta = 0.0
@@ -24,6 +24,7 @@ class BetaWarmupCallback(L.Callback):
       beta = self.beta * (current_step - self.start_steps) / (self.end_steps - self.start_steps)
 
     pl_module._beta = beta
+
 
 class CyclicalBetaWarmupCallback(L.Callback):
   """
@@ -39,7 +40,7 @@ class CyclicalBetaWarmupCallback(L.Callback):
     self.cycle_duration = cycle_duration
     self._beta = beta
 
-  def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+  def on_train_batch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
     current_epoch = trainer.current_epoch
     if current_epoch < self.start_epoch:
       beta = 0.0

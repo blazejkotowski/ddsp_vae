@@ -103,12 +103,12 @@ if __name__ == '__main__':
   parser.add_argument('--model_directory', type=str, help='Path to the model training')
   parser.add_argument('--output_path', type=str, help='Directory to save the autoencoded audio')
   parser.add_argument('--streaming', type=bool, default=True, help='Whether to use streaming mode')
-  parser.add_argument('--type', default='best', help='Type of model to export', choices=['best, last'])
+  parser.add_argument('--type', default='best', help='Type of model to export', choices=['best', 'last'])
   config = parser.parse_args()
 
   cc.use_cached_conv(config.streaming)
 
-  checkpoint_path = find_checkpoint(config.model_directory, type=config.type)
+  checkpoint_path = find_checkpoint(config.model_directory, typ=config.type)
 
   format = config.output_path.split('.')[-1]
   if format not in ['ts', 'onnx']:
