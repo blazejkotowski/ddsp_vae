@@ -94,12 +94,20 @@ if __name__ == '__main__':
     training_callbacks += [EarlyStopping(monitor='train_loss', patience=10, mode='min')]
 
   # Define the checkpoint callback
-  checkpoint_callback = ModelCheckpoint(
+  best_checkpoint_callback = ModelCheckpoint(
       filename='best',
       monitor='val_loss',
       mode='min',
   )
-  training_callbacks.append(checkpoint_callback)
+  training_callbacks.append(best_checkpoint_callback)
+
+  # Callback to save the last checkpoint after every epoch
+  last_checkpoint_callback = ModelCheckpoint(
+    filename='last',
+    save_top_k=1,  # Save only one file, the most recent one
+    save_last=True  # Always save the model at the end of the epoch
+  )
+  training_callbacks.append(last_checkpoint_callback)
 
   # Configure the trainer
   precision = 16 if config.mixed_precision else 32
