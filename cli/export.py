@@ -109,6 +109,7 @@ if __name__ == '__main__':
   cc.use_cached_conv(config.streaming)
 
   checkpoint_path = find_checkpoint(config.model_directory, typ=config.type)
+  print(f"exporting model from checkpoint: {checkpoint_path}")
 
   format = config.output_path.split('.')[-1]
   if format not in ['ts', 'onnx']:
