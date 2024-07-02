@@ -1,4 +1,5 @@
 import lightning as L
+from typing import Any
 
 class BetaWarmupCallback(L.Callback):
   """
