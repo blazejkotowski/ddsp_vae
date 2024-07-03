@@ -20,6 +20,7 @@ class DDSP(L.LightningModule):
     - latent_size: int, number of latent dimensions
     - fs : int, the sampling rate of the input signal
     - encoder_ratios: List[int], the capacity ratios for encoder layers
+    - n_mfcc: int, the number of MFCCs to extract
     - decoder_ratios: List[int], the capacity ratios for decoder layers
     - capacity: int, the capacity of the model
     - resampling_factor: int, internal up / down sampling factor for control signal and noisebands
@@ -33,6 +34,7 @@ class DDSP(L.LightningModule):
                latent_size: int = 16,
                fs: int = 44100,
                encoder_ratios: List[int] = [8, 4, 2],
+               n_mfcc: int = 30,
                decoder_ratios: List[int] = [2, 4, 8],
                capacity: int = 64,
                resampling_factor: int = 32,
@@ -63,6 +65,7 @@ class DDSP(L.LightningModule):
       sample_rate=fs,
       latent_size=latent_size,
       streaming=streaming,
+      n_mfcc=n_mfcc,
     )
 
     ## Decoder to predict the amplitudes of the noise bands

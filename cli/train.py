@@ -23,6 +23,7 @@ if __name__ == '__main__':
   parser.add_argument('--n_sines', type=int, default=500, help='Number of sines to synthesise')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--encoder_ratios', type=int, nargs='+', default=[8, 4, 2], help='Capacity ratios for the encoder')
+  parser.add_argument('--n_mfcc', type=int, default=30, help='Number of MFCCs to extract')
   parser.add_argument('--decoder_ratios', type=int, nargs='+', default=[2, 4, 8], help='Capacity ratios for the decoder')
   parser.add_argument('--capacity', type=int, default=64, help='Capacity of the model')
   parser.add_argument('--latent_size', type=int, default=16, help='Dimensionality of the latent space')
@@ -67,6 +68,7 @@ if __name__ == '__main__':
     latent_size=config.latent_size,
     fs=config.fs,
     encoder_ratios=config.encoder_ratios,
+    n_mfcc=config.n_mfcc,
     decoder_ratios=config.decoder_ratios,
     capacity=config.capacity,
     resampling_factor=config.resampling_factor,
