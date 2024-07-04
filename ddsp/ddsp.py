@@ -170,7 +170,7 @@ class DDSP(L.LightningModule):
     y_audio = self._synthesize(*synth_params)
 
     # Compute the reconstruction loss
-    recons_loss = self._recons_loss(y_audio, x_audio)
+    recons_loss = self._reconstruction_loss(y_audio, x_audio)
 
     # Compute the total loss using β parameter
     loss = recons_loss + self._kld_weight * self._beta * kld_loss
@@ -224,6 +224,15 @@ class DDSP(L.LightningModule):
     noisebands = self._noisebands_synth(noiseband_amps)
     return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
 
+  def _reconstruction_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Computes the reconstruction loss"""
+    if x.shape[-1] != y.shape[-1]:
+      # Fit the signals to the same length
+      min_length = min(x.shape[-1], y.shape[-1])
+      x = x[..., :min_length]
+      y = y[..., :min_length]
+
+    return self._recons_loss(y, x)
 
   @torch.jit.ignore
   def _construct_mrstft_loss(self):
