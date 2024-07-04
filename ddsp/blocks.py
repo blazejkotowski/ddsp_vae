@@ -66,7 +66,7 @@ class VariationalEncoder(nn.Module):
                sample_rate: int = 44100,
                layer_sizes: List[int] = [128, 64, 32],
                latent_size: int = 16,
-               downsample_factor: int = 32,
+               resampling_factor: int = 32,
                n_mfcc: int = 30,
                streaming: bool = False):
     """
@@ -81,7 +81,7 @@ class VariationalEncoder(nn.Module):
     super().__init__()
     self.streaming = streaming
 
-    self.downsample_factor = downsample_factor
+    self.resampling_factor = resampling_factor
     self.mfcc = MFCC(sample_rate = sample_rate, n_mfcc = n_mfcc)
 
     self.normalization = nn.LayerNorm(n_mfcc)
@@ -109,7 +109,7 @@ class VariationalEncoder(nn.Module):
     mfcc = F.interpolate(mfcc, size = audio.shape[-1], mode = 'nearest')
 
     # Downsample the MFCCs
-    x = F.interpolate(mfcc, scale_factor = 1/self.downsample_factor, mode = 'linear')
+    x = F.interpolate(mfcc, scale_factor = 1/self.resampling_factor, mode = 'linear')
 
     # Reshape to [batch_size, signal_length, n_mfcc]
     x = x.permute(0, 2, 1)

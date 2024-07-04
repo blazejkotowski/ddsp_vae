@@ -66,6 +66,7 @@ class DDSP(L.LightningModule):
       latent_size=latent_size,
       streaming=streaming,
       n_mfcc=n_mfcc,
+      resampling_factor=self.resampling_factor,
     )
 
     ## Decoder to predict the amplitudes of the noise bands
