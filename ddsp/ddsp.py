@@ -226,6 +226,9 @@ class DDSP(L.LightningModule):
 
   def _reconstruction_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Computes the reconstruction loss"""
+    if y.dim() == 2:
+      y = y.unsqueeze(1)
+
     if x.shape[-1] != y.shape[-1]:
       # Fit the signals to the same length
       min_length = min(x.shape[-1], y.shape[-1])
