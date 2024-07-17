@@ -42,6 +42,9 @@ if __name__ == '__main__':
     device=config.device
   )
 
+  # For denormalizing
+  normalization_dict = dataset.normalization_dict
+
   # Split into training and validation
   train_set, val_set = random_split(dataset, [0.9, 0.1])
   train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
@@ -56,6 +59,7 @@ if __name__ == '__main__':
     lr=config.lr,
     d_model=config.d_model,
     num_layers=config.n_layers,
+    normalization_dict = normalization_dict
   )
 
   # Setup the logger

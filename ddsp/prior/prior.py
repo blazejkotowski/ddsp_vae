@@ -5,8 +5,10 @@ import math
 
 import lightning as L
 
+from typing import Dict
+
 class Prior(L.LightningModule):
-  def __init__(self, latent_size: int = 8, d_model: int = 512, nhead: int = 8, num_layers: int = 6, dropout: float = 0.1, max_len: int = 256, lr: float = 1e-4):
+  def __init__(self, latent_size: int = 8, d_model: int = 512, nhead: int = 8, num_layers: int = 6, dropout: float = 0.1, max_len: int = 256, lr: float = 1e-4, normalization_dict: Dict[str, float] = {'mean': 0.0, 'var': 1.0}):
     """
     Arguments:
       - latent_size: int, the size of the latent code
@@ -15,10 +17,14 @@ class Prior(L.LightningModule):
       - num_layers: int, the number of sub-encoder-layers in the encoder
       - dropout: float, the dropout value
       - max_len: int, the maximum length of the sequence
+      - lr: float, the learning rate
+      - normalization_dict: Dict[str, float], the normalization dictionary containing original mean and variance of the dataset
     """
     super(Prior, self).__init__()
 
     self.save_hyperparameters()
+
+    self._normalization_dict = normalization_dict
 
     self._d_model = d_model
     self._lr = lr
@@ -53,7 +59,7 @@ class Prior(L.LightningModule):
     u = u.permute(1, 0, 2) # => [seq_len, batch_size, d_model]
 
     # encode in causal mode
-    causal_mask = torch.triu(torch.ones(u.size(0), u.size(0)), diagonal=1) * float('-inf').to(u.device)
+    causal_mask = torch.triu(torch.ones(u.size(0), u.size(0)) * float('-inf'), diagonal=1).to(u.device)
     enc = self._encoder(u, mask=causal_mask) * math.sqrt(self._d_model)
 
     # permute back
@@ -81,6 +87,10 @@ class Prior(L.LightningModule):
     return loss
 
 
+  def configure_optimizers(self):
+    return torch.optim.Adam(self.parameters(), lr=self._lr)
+
+
   def _step(self, batch):
     """
     Arguments:
@@ -95,8 +105,17 @@ class Prior(L.LightningModule):
     return loss
 
 
-  def configure_optimizers(self):
-    return torch.optim.Adam(self.parameters(), lr=self._lr)
+  def _denormalize(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Translates the data to original distribution
+
+    Arguments:
+      - x: torch.Tensor, the normalized data
+    Returns:
+      - x: torch.Tensor, the denormalized data
+    """
+    return x * self._normalization_dict['var'] + self._normalization_dict['mean']
+
 
 class LearnablePositionalEncoding(nn.Module):
   def __init__(self, d_model: int, max_len: int = 256, dropout: float = 0.1):

@@ -6,9 +6,7 @@ import librosa as li
 from glob import glob
 import os
 
-from typing import Tuple
-
-from ddsp import AudioDataset
+from typing import Tuple, List
 
 torch.set_default_dtype(torch.float32)
 
@@ -37,12 +35,13 @@ class PriorDataset(Dataset):
     self._encoder = vae_model.encoder
     self._encoder.streaming = False
 
-    audio = self._load_audio_dataset(audio_dataset_path)
-    self._encodings = self._normalize(self._encode_audio_dataset(audio))
+    audio_tensors = self._load_audio_dataset(audio_dataset_path)
+    encodings = self._encode_audio_dataset(audio_tensors)
+    self._encodings, self.normalization_dict = self._normalize(encodings)
 
 
   def __len__(self) -> int:
-    return len(self._encodings) - self._sequence_length - 1
+    return len(self._encodings)
 
 
   def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -54,9 +53,7 @@ class PriorDataset(Dataset):
       - x: torch.Tensor[n_frames, n_latents], the preceding latent code sequence
       - y: torch.Tensor[n_latents], the target latent code
     """
-
-    encoding = self._encodings[idx:idx+self._sequence_length+1]
-    return encoding
+    return self._encodings[idx]
 
 
   def _normalize(self, x: torch.Tensor) -> torch.Tensor:
@@ -67,34 +64,39 @@ class PriorDataset(Dataset):
     Returns:
       - x: torch.Tensor, the normalized latent codes
     """
-    return (x - x.mean(dim = 0)) / x.var(dim = 0)
+    all_x = torch.cat(x, dim = 0)
+    mean = all_x.mean(dim=0).detach().numpy()
+    var = all_x.var(dim=0).detach().numpy()
+    normalization_dict = {'mean': mean, 'var': var}
 
-  def _encode_audio_dataset(self, audio):
+    normalized = [(item - mean) / var for item in x]
+
+    return normalized, normalization_dict
+
+
+  def _encode_audio_dataset(self, audio_tensors: List[torch.Tensor]):
     """
     Encode the entire audio dataset into latent codes.
     Arguments:
-      - audio: torch.Tensor, the audio tensor
+      - audio_tensors: List[torch.Tensor], the audio tensors
       - sequence_length: int, the length of the preceding latent code sequence, in samples
     Returns:
       - encodings: Dict[int, torch.Tensor], the encoded latent codes
     """
     print("Encoding audio dataset...")
-    chunk_length = 44100 # 1 s
-    encodings = torch.tensor([], dtype=torch.float32, device=self._device)
+    encodings = []
 
-    for i in range(len(audio) // chunk_length + 1):
-      sample_start = i * chunk_length
-      sample_end = sample_start + chunk_length
-      audio_sample = audio[sample_start:sample_end]
+    for audio in audio_tensors:
       with torch.no_grad():
-        mu, scale = self._encoder(audio_sample.unsqueeze(0))
+        mu, scale = self._encoder(audio.unsqueeze(0))
         mu_scale = torch.cat([mu, scale], dim = -1).squeeze(0)
-        encodings = torch.cat([encodings, mu_scale], dim = 0)
+        for i in range(mu_scale.size(0) - self._sequence_length):
+          encodings.append(mu_scale[i:i+self._sequence_length+1])
 
     return encodings
 
 
-  def _load_audio_dataset(self, path: str) -> torch.Tensor:
+  def _load_audio_dataset(self, path: str) -> List[torch.Tensor]:
     """
     Load and concat entire dataset into single tensor.
 
@@ -103,11 +105,14 @@ class PriorDataset(Dataset):
     Returns:
       - audio: torch.Tensor, the audio tensor
     """
-    audio = torch.tensor([])
+    audio_tensors = []
     for filepath in glob(os.path.join(path, '**', '*.wav'), recursive=True):
       x = self._load_audio_file(filepath)
-      audio = torch.concat([audio, torch.from_numpy(x)], dim = 0)
-    return audio.to(self._device)
+      audio = torch.from_numpy(x)
+      if audio.size(0) >= self._resampling_factor:
+        audio_tensors.append(audio.to(self._device))
+
+    return audio_tensors
 
 
   def _load_audio_file(self, path: str):
