@@ -15,6 +15,8 @@ if __name__ == '__main__':
   parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
   parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
   parser.add_argument('--sequence_length', type=int, default=5, help='Number of the preceding latent codes')
+  parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
+  parser.add_argument('--n_layers', type=int, default=6, help='Number of layers in the transformer')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--training_dir', type=str, default='training/prior', help='Directory to save the training logs')
@@ -52,6 +54,8 @@ if __name__ == '__main__':
     latent_size=latent_size,
     dropout=config.dropout,
     lr=config.lr,
+    d_model=config.d_model,
+    num_layers=config.n_layers,
   )
 
   # Setup the logger
