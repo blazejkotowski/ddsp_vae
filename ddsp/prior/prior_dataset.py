@@ -56,20 +56,21 @@ class PriorDataset(Dataset):
     return self._encodings[idx]
 
 
-  def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+  def _normalize(self, x: List[torch.Tensor]) -> torch.Tensor:
     """
     Normalize the latent codes.
     Arguments:
-      - x: torch.Tensor, the latent codes
+      - x: List[torch.Tensor], the sequences of latent codes
     Returns:
       - x: torch.Tensor, the normalized latent codes
     """
     all_x = torch.cat(x, dim = 0)
     mean = all_x.mean(dim=0).detach().cpu().numpy()
     var = all_x.var(dim=0).detach().cpu().numpy()
+
     normalization_dict = {'mean': mean, 'var': var}
 
-    normalized = [(item - mean) / var for item in x]
+    normalized = [torch.from_numpy((item.cpu().numpy() - mean) / var).to(self._device) for item in x]
 
     return normalized, normalization_dict
 
