@@ -104,8 +104,18 @@ class Prior(L.LightningModule):
 
     return loss
 
+  def preprocess(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Normalizes the data
 
-  def _denormalize(self, x: torch.Tensor) -> torch.Tensor:
+    Arguments:
+      - x: torch.Tensor, the data
+    Returns:
+      - x: torch.Tensor, the normalized data
+    """
+    return (x - self._normalization_dict['mean']) / self._normalization_dict['var']
+
+  def postprocess(self, x: torch.Tensor) -> torch.Tensor:
     """
     Translates the data to original distribution
 

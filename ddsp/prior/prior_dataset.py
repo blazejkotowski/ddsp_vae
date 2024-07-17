@@ -65,8 +65,8 @@ class PriorDataset(Dataset):
       - x: torch.Tensor, the normalized latent codes
     """
     all_x = torch.cat(x, dim = 0)
-    mean = all_x.mean(dim=0).detach().numpy()
-    var = all_x.var(dim=0).detach().numpy()
+    mean = all_x.mean(dim=0).detach().cpu().numpy()
+    var = all_x.var(dim=0).detach().cpu().numpy()
     normalization_dict = {'mean': mean, 'var': var}
 
     normalized = [(item - mean) / var for item in x]
