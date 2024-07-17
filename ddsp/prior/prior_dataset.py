@@ -67,7 +67,6 @@ class PriorDataset(Dataset):
     Returns:
       - x: torch.Tensor, the normalized latent codes
     """
-    breakpoint()
     return (x - x.mean(dim = 0)) / x.var(dim = 0)
 
   def _encode_audio_dataset(self, audio):
