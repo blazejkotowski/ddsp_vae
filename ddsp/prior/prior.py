@@ -49,8 +49,14 @@ class Prior(L.LightningModule):
     # add positional encoding
     u = self._positional_encoding(u)
 
+    # permute to comply with transformer shape
+    u = u.permute(1, 0, 2)
+
     # encode
-    enc = self._encoder(u) * (1/math.sqrt(self._d_model))
+    enc = self._encoder(u) * math.sqrt(self._d_model)
+
+    # permute back
+    enc = enc.permute(1, 0, 2)
 
     # non-linearity and droput
     ac = self._dropout(self._activation(enc))
@@ -74,10 +80,6 @@ class Prior(L.LightningModule):
     return loss
 
 
-  def configure_optimizers(self):
-    return torch.optim.Adam(self.parameters(), lr=self._lr)
-
-
   def _step(self, batch):
     """
     Arguments:
@@ -92,6 +94,8 @@ class Prior(L.LightningModule):
     return loss
 
 
+  def configure_optimizers(self):
+    return torch.optim.Adam(self.parameters(), lr=self._lr)
 
 class LearnablePositionalEncoding(nn.Module):
   def __init__(self, d_model: int, max_len: int = 256, dropout: float = 0.1):
