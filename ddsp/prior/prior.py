@@ -41,7 +41,7 @@ class Prior(L.LightningModule):
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     """
-    x: torch.Tensor[n_frames, n_latents], the preceding latent code sequence
+    x: torch.Tensor[batch_size, seq_len, n_latents], the preceding latent code sequence
     """
     # project to transformer space
     u = self._projection(x)
@@ -50,10 +50,11 @@ class Prior(L.LightningModule):
     u = self._positional_encoding(u)
 
     # permute to comply with transformer shape
-    u = u.permute(1, 0, 2)
+    u = u.permute(1, 0, 2) # => [seq_len, batch_size, d_model]
 
-    # encode
-    enc = self._encoder(u) * math.sqrt(self._d_model)
+    # encode in causal mode
+    causal_mask = torch.triu(torch.ones(u.size(0), u.size(0)), diagonal=1) * float('-inf').to(u.device)
+    enc = self._encoder(u, mask=causal_mask) * math.sqrt(self._d_model)
 
     # permute back
     enc = enc.permute(1, 0, 2)
