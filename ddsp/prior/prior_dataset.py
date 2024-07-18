@@ -38,7 +38,6 @@ class PriorDataset(Dataset):
     audio_tensors = self._load_audio_dataset(audio_dataset_path)
     encodings = self._encode_audio_dataset(audio_tensors)
 
-    breakpoint()
     self._encodings, self.normalization_dict = self._normalize(encodings)
 
 
