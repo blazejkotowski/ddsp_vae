@@ -98,13 +98,13 @@ class PriorDataset(Dataset):
         # mu_scale = mu_scale[..., :1] # try only one (the first) latent variable
 
         # Overlapping, shifting window chunks
-        # for i in range(mu_scale.size(0) - self._sequence_length):
-        #   encodings.append(mu_scale[i:i+self._sequence_length+1])
+        for i in range(mu_scale.size(0) - self._sequence_length):
+          encodings.append(mu_scale[i:i+self._sequence_length+1])
 
-        # Non-overlapping chunks
-        for chunk in mu_scale.split(self._sequence_length+1):
-          if chunk.size(0) == self._sequence_length+1:
-            encodings.append(chunk)
+        # # Non-overlapping chunks
+        # for chunk in mu_scale.split(self._sequence_length+1):
+        #   if chunk.size(0) == self._sequence_length+1:
+        #     encodings.append(chunk)
 
     return encodings
 
