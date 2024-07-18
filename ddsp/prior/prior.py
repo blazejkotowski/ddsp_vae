@@ -32,9 +32,10 @@ class Prior(L.LightningModule):
     self._max_len = max_len
 
     self._projection = nn.Linear(latent_size, d_model)
-    encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead)
+    encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
     self._encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
-    self._positional_encoding = LearnablePositionalEncoding(d_model = d_model, max_len = max_len, dropout=dropout)
+    # self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
+    self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
     self._activation = nn.ReLU()
     self._dropout = nn.Dropout(dropout)
 
@@ -47,32 +48,35 @@ class Prior(L.LightningModule):
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     """
-    x: torch.Tensor[batch_size, seq_len, n_latents], the preceding latent code sequence
+    x: torch.Tensor[batch_size, seq_len, latent_size], the preceding latent code sequence
     """
+    # permute to comply with transformer shape
+    x = x.permute(1, 0, 2) # => [seq_len, batch_size, latent_size]
+
     # project to transformer space
-    u = self._projection(x)
+    u = self._projection(x) # => [seq_len, batch_size, d_model]
 
     # add positional encoding
-    u = self._positional_encoding(u)
-
-    # permute to comply with transformer shape
-    u = u.permute(1, 0, 2) # => [seq_len, batch_size, d_model]
+    pos = self._positional_encoding(u)
 
     # encode in causal mode
-    causal_mask = torch.triu(torch.ones(u.size(0), u.size(0)) * float('-inf'), diagonal=1).to(u.device)
-    enc = self._encoder(u, mask=causal_mask) * math.sqrt(self._d_model)
+    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0)) * float('-inf'), diagonal=1).to(pos.device)
+    enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
+
+    # non-linearity
+    act = self._activation(enc)
 
     # permute back
-    enc = enc.permute(1, 0, 2)
+    out = act.permute(1, 0, 2) # => [batch_size, seq_len, d_model]
 
-    # non-linearity and droput
-    ac = self._dropout(self._activation(enc))
+    # dropout
+    out = self._dropout(out)
 
     # flatten
-    stacked = ac.reshape(ac.size(0), -1)
+    stacked = out.reshape(out.size(0), -1) # => [batch_size, seq_len * d_model]
 
     # predict next code
-    return self._out(stacked)
+    return self._out(stacked) # => [batch_size, n_latents]
 
 
   def training_step(self, batch, batch_idx):
@@ -145,3 +149,44 @@ class LearnablePositionalEncoding(nn.Module):
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     x = x + self._positional_encoding[:x.size(0), ...]
     return self._dropout(x)
+
+
+# From https://github.com/pytorch/examples/blob/master/word_language_model/model.py
+class FixedPositionalEncoding(nn.Module):
+  r"""Inject some information about the relative or absolute position of the tokens
+      in the sequence. The positional encodings have the same dimension as
+      the embeddings, so that the two can be summed. Here, we use sine and cosine
+      functions of different frequencies.
+  .. math::
+      \text{PosEncoder}(pos, 2i) = sin(pos/10000^(2i/d_model))
+      \text{PosEncoder}(pos, 2i+1) = cos(pos/10000^(2i/d_model))
+      \text{where pos is the word position and i is the embed idx)
+  Args:
+      d_model: the embed dim (required).
+      dropout: the dropout value (default=0.1).
+      max_len: the max. length of the incoming sequence (default=1024).
+  """
+
+  def __init__(self, d_model, dropout=0.1, max_len=1024, scale_factor=1.0):
+    super(FixedPositionalEncoding, self).__init__()
+    self.dropout = nn.Dropout(p=dropout)
+
+    pe = torch.zeros(max_len, d_model)  # positional encoding
+    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    pe = scale_factor * pe.unsqueeze(0).transpose(0, 1)
+    self.register_buffer('pe', pe)  # this stores the variable in the state_dict (used for non-trainable variables)
+
+  def forward(self, x):
+    r"""Inputs of forward function
+    Args:
+        x: the sequence fed to the positional encoder model (required).
+    Shape:
+        x: [sequence length, batch size, embed dim]
+        output: [sequence length, batch size, embed dim]
+    """
+
+    x = x + self.pe[:x.size(0), :]
+    return self.dropout(x)
