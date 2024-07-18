@@ -71,7 +71,8 @@ class PriorDataset(Dataset):
 
     normalization_dict = {'mean': mean, 'var': var}
 
-    normalized = [torch.from_numpy((item.cpu().numpy() - mean) / var).to(self._device) for item in x]
+    # normalized = [torch.from_numpy((item.cpu().numpy() - mean) / var).to(self._device) for item in x]
+    normalized = x
 
     return normalized, normalization_dict
 
@@ -93,13 +94,16 @@ class PriorDataset(Dataset):
         mu, scale = self._encoder(audio.unsqueeze(0))
         mu_scale = torch.cat([mu, scale], dim = -1).squeeze(0)
 
-        # Shifting window
+        # mu_scale = mu.squeeze(0) # try only mu
+        # mu_scale = mu_scale[..., :1] # try only one (the first) latent variable
+
+        # Overlapping, shifting window chunks
         # for i in range(mu_scale.size(0) - self._sequence_length):
         #   encodings.append(mu_scale[i:i+self._sequence_length+1])
 
-        # Equal chunks
-        for chunk in mu_scale.split(self._sequence_length):
-          if chunk.size(0) == self._sequence_length:
+        # Non-overlapping chunks
+        for chunk in mu_scale.split(self._sequence_length+1):
+          if chunk.size(0) == self._sequence_length+1:
             encodings.append(chunk)
 
     return encodings

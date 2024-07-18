@@ -188,6 +188,5 @@ class FixedPositionalEncoding(nn.Module):
         x: [sequence length, batch size, embed dim]
         output: [sequence length, batch size, embed dim]
     """
-
     x = x + self.pe[:x.size(0), :]
     return self.dropout(x)

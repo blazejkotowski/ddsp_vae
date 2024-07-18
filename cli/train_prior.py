@@ -42,12 +42,13 @@ if __name__ == '__main__':
     sampling_rate=config.fs,
     device=config.device
   )
+  # For denormalizing
+  normalization_dict = dataset.normalization_dict
 
   # Dummy dataset
   # dataset = DummyMultivariateSequenceDataset(num_features=16, seq_length=config.sequence_length, n_examples=10000)
+  # normalization_dict = {'mean': 0.0, 'var': 1.0}
 
-  # For denormalizing
-  # normalization_dict = dataset.normalization_dict
 
   # Split into training and validation
   train_set, val_set = random_split(dataset, [0.9, 0.1])
@@ -63,7 +64,8 @@ if __name__ == '__main__':
     lr=config.lr,
     d_model=config.d_model,
     num_layers=config.n_layers,
-    # normalization_dict = normalization_dict
+    normalization_dict=normalization_dict,
+    max_len=config.sequence_length,
   )
 
   # Setup the logger
