@@ -37,6 +37,8 @@ class PriorDataset(Dataset):
 
     audio_tensors = self._load_audio_dataset(audio_dataset_path)
     encodings = self._encode_audio_dataset(audio_tensors)
+
+    breakpoint()
     self._encodings, self.normalization_dict = self._normalize(encodings)
 
 
@@ -91,8 +93,15 @@ class PriorDataset(Dataset):
       with torch.no_grad():
         mu, scale = self._encoder(audio.unsqueeze(0))
         mu_scale = torch.cat([mu, scale], dim = -1).squeeze(0)
-        for i in range(mu_scale.size(0) - self._sequence_length):
-          encodings.append(mu_scale[i:i+self._sequence_length+1])
+
+        # Shifting window
+        # for i in range(mu_scale.size(0) - self._sequence_length):
+        #   encodings.append(mu_scale[i:i+self._sequence_length+1])
+
+        # Equal chunks
+        for chunk in mu_scale.split(self._sequence_length):
+          if chunk.size(0) == self._sequence_length:
+            encodings.append(chunk)
 
     return encodings
 
@@ -123,3 +132,38 @@ class PriorDataset(Dataset):
     audio, _ = li.load(path, sr = self._sampling_rate, mono = True)
     return audio
 
+
+
+import torch
+from torch.utils.data import Dataset
+
+class DummyMultivariateSequenceDataset(Dataset):
+  def __init__(self, num_features, seq_length, n_examples):
+    """
+    Args:
+        num_features (int): Number of features in each data point.
+        seq_length (int): Length of each sequence.
+        n_examples (int): Number of examples in the dataset.
+    """
+    self.num_features = num_features
+    self.seq_length = seq_length
+    self.n_examples = n_examples
+
+    # Generate the synthetic data
+    self.data = self._generate_data()
+
+  def _generate_data(self):
+    # Generate random data for features
+    data = torch.randn(self.n_examples, self.seq_length + 1, self.num_features)
+
+    # Ensure that the data is easy to predict: make the target (next step) a linear combination of the input
+    for i in range(self.seq_length):
+        data[:, i + 1, :] = data[:, i, :] * 0.5 + torch.randn(self.n_examples, self.num_features) * 0.1
+
+    return data
+
+  def __len__(self):
+    return self.n_examples
+
+  def __getitem__(self, idx):
+    return self.data[idx, :self.seq_length +1, :]

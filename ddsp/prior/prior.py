@@ -104,6 +104,7 @@ class Prior(L.LightningModule):
     y = batch[:, -1, :]
 
     y_hat = self(x)
+
     loss = self._loss(y_hat, y)
 
     return loss

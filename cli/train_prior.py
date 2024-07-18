@@ -8,6 +8,7 @@ import os
 from torch.utils.data import DataLoader, random_split
 
 from ddsp.prior import Prior, PriorDataset
+from ddsp.prior.prior_dataset import DummyMultivariateSequenceDataset
 from ddsp.utils import find_checkpoint
 
 if __name__ == '__main__':
@@ -42,8 +43,11 @@ if __name__ == '__main__':
     device=config.device
   )
 
+  # Dummy dataset
+  # dataset = DummyMultivariateSequenceDataset(num_features=16, seq_length=config.sequence_length, n_examples=10000)
+
   # For denormalizing
-  normalization_dict = dataset.normalization_dict
+  # normalization_dict = dataset.normalization_dict
 
   # Split into training and validation
   train_set, val_set = random_split(dataset, [0.9, 0.1])
@@ -59,7 +63,7 @@ if __name__ == '__main__':
     lr=config.lr,
     d_model=config.d_model,
     num_layers=config.n_layers,
-    normalization_dict = normalization_dict
+    # normalization_dict = normalization_dict
   )
 
   # Setup the logger
