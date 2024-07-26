@@ -11,6 +11,9 @@ from ddsp.prior import Prior, PriorDataset
 from ddsp.prior.prior_dataset import DummyMultivariateSequenceDataset
 from ddsp.utils import find_checkpoint
 
+import torch
+torch.set_float32_matmul_precision('medium')
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
@@ -27,6 +30,7 @@ if __name__ == '__main__':
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds', required=True)
   parser.add_argument('--early_stopping', type=bool, default=True, help='Enable early stopping')
+  parser.add_argument('--max_epochs', type=int, default=10, help='Maximum number of epochs to train')
   config = parser.parse_args()
 
 
@@ -92,6 +96,7 @@ if __name__ == '__main__':
     accelerator=config.device,
     log_every_n_steps=4,
     logger=logger,
+    max_epochs = config.max_epochs
   )
 
   # Try to find previous checkpoint

@@ -24,8 +24,6 @@ class Prior(L.LightningModule):
 
     self.save_hyperparameters()
 
-    self._normalization_dict = normalization_dict
-
     self._d_model = d_model
     self._lr = lr
     self._latent_size = latent_size
@@ -80,7 +78,7 @@ class Prior(L.LightningModule):
 
 
   def training_step(self, batch, batch_idx):
-    loss = self._step(batch)
+    loss = self._scheduled_sampling_step(batch, batch_idx)
     self.log('train_loss', loss, prog_bar=True)
     return loss
 
@@ -100,37 +98,52 @@ class Prior(L.LightningModule):
     Arguments:
       - batch: torch.Tensor[batch_size, seq_len, latent_size], the batch of latent codes sequences
     """
-    x = batch[:, :-1, :]
-    y = batch[:, -1, :]
+    x = batch[:, :self._max_len, :]
+    y = batch[:, self._max_len, :]
 
     y_hat = self(x)
 
     loss = self._loss(y_hat, y)
 
     return loss
-
-  def preprocess(self, x: torch.Tensor) -> torch.Tensor:
+  
+  def _scheduled_sampling_step(self, batch, batch_idx):
     """
-    Normalizes the data
-
+    Scheduled sampling is a technique used in training sequence-to-sequence models that helps with the problem of exposure bias.
     Arguments:
-      - x: torch.Tensor, the data
-    Returns:
-      - x: torch.Tensor, the normalized data
+      - batch: torch.Tensor[batch_size, seq_len, latent_size], the batch of latent codes sequences
     """
-    return (x - self._normalization_dict['mean']) / self._normalization_dict['var']
+    x = batch[:, :self._max_len, :]
+    y = batch[:, self._max_len:, :]
 
-  def postprocess(self, x: torch.Tensor) -> torch.Tensor:
-    """
-    Translates the data to original distribution
+    seq_len = y.size(1)
+    outputs = []
 
-    Arguments:
-      - x: torch.Tensor, the normalized data
-    Returns:
-      - x: torch.Tensor, the denormalized data
-    """
-    return x * self._normalization_dict['var'] + self._normalization_dict['mean']
+    current_input = x.clone()
 
+    for t in range(seq_len):
+      y_hat = self(current_input)
+      y_hat = y_hat.squeeze(1)
+
+      outputs.append(y_hat)
+
+      # Scheduled sampling
+      # Compute the probability of using the true previous value
+      total_steps = self.trainer.max_epochs * len(self.trainer.train_dataloader)
+      current_step = self.global_step
+      teacher_forcing_ratio = max(0, 1 - current_step / total_steps)
+
+      self.log('tf_ratio', teacher_forcing_ratio, prog_bar=True)
+
+      current_input = current_input[:, 1:, :]
+      if torch.rand(1).item() < teacher_forcing_ratio:
+        current_input = torch.cat([current_input, y[:, t-1, :].unsqueeze(1)], dim=1)
+      else:
+        current_input = torch.cat([current_input, y_hat.unsqueeze(1)], dim=1)
+
+    outputs = torch.stack(outputs, dim=1)
+    loss = self._loss(outputs, y)
+    return loss
 
 class LearnablePositionalEncoding(nn.Module):
   def __init__(self, d_model: int, max_len: int = 256, dropout: float = 0.1):

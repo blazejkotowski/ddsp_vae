@@ -82,7 +82,6 @@ class PriorDataset(Dataset):
     Encode the entire audio dataset into latent codes.
     Arguments:
       - audio_tensors: List[torch.Tensor], the audio tensors
-      - sequence_length: int, the length of the preceding latent code sequence, in samples
     Returns:
       - encodings: Dict[int, torch.Tensor], the encoded latent codes
     """
@@ -98,8 +97,8 @@ class PriorDataset(Dataset):
         # mu_scale = mu_scale[..., :1] # try only one (the first) latent variable
 
         # Overlapping, shifting window chunks
-        for i in range(mu_scale.size(0) - self._sequence_length):
-          encodings.append(mu_scale[i:i+self._sequence_length+1])
+        for i in range(mu_scale.size(0) - (self._sequence_length*2)):
+          encodings.append(mu_scale[i:i+self._sequence_length*2])
 
         # # Non-overlapping chunks
         # for chunk in mu_scale.split(self._sequence_length+1):

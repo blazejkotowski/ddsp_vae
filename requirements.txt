@@ -1,9 +1,9 @@
+numpy<2
+torch==2.1.2
+torchaudio
+tensorboard
 auraloss
 lightning
 nn-tilde
-numpy
-tensorboard
-torch
-torchaudio
 scipy
 librosa
