@@ -97,8 +97,8 @@ class PriorDataset(Dataset):
         # mu_scale = mu_scale[..., :1] # try only one (the first) latent variable
 
         # Overlapping, shifting window chunks
-        for i in range(mu_scale.size(0) - (self._sequence_length*2)):
-          encodings.append(mu_scale[i:i+self._sequence_length*2])
+        for i in range(mu_scale.size(0) - (self._sequence_length+1)):
+          encodings.append(mu_scale[i:i+self._sequence_length+1, :1])
 
         # # Non-overlapping chunks
         # for chunk in mu_scale.split(self._sequence_length+1):
@@ -169,3 +169,39 @@ class DummyMultivariateSequenceDataset(Dataset):
 
   def __getitem__(self, idx):
     return self.data[idx, :self.seq_length +1, :]
+
+
+class DummySinewaveDataset(Dataset):
+  def __init__(self, seq_length: int = 100, latents: int = 16):
+    self._sequence_length = seq_length
+
+    sampling_rate = 1000
+    duration = 100
+    t = torch.linspace(0, duration, int(duration*sampling_rate))
+
+    # random frequencies
+    frequencies = [16.453167,
+                  3.3295221,
+                  14.365895,
+                  18.862534,
+                  9.008977,
+                  19.695086,
+                  4.595031,
+                  17.3579,
+                  12.761978,
+                  11.577483,
+                  17.892336,
+                  13.800441,
+                  8.895475,
+                  18.533566,
+                  18.712004,
+                  5.2276564]
+
+    # generate a random sinewave for each latent
+    self._data = torch.stack([torch.sin(2 * torch.pi * f * t) for f in frequencies], dim = 1)
+
+  def __len__(self) -> int:
+    return len(self._data) - self._sequence_length*2
+
+  def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    return self._data[idx:idx+self._sequence_length+1]

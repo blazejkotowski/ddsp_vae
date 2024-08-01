@@ -1,11 +1,14 @@
 import torch
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
+import torch.nn.functional as F
 import math
 
 import lightning as L
 
 from typing import Dict
+
+from .blocks import QuantizedNormal
 
 class Prior(L.LightningModule):
   def __init__(self, 
@@ -16,7 +19,8 @@ class Prior(L.LightningModule):
                dropout: float = 0.1, 
                max_len: int = 256,
                seq_out_len: int = 64,
-               lr: float = 1e-4):
+               lr: float = 1e-4,
+               resolution: int = 64):
     """
     Arguments:
       - latent_size: int, the size of the latent code
@@ -27,6 +31,7 @@ class Prior(L.LightningModule):
       - max_len: int, the maximum length of the sequence
       - seq_out_len: int, the length of the output sequence
       - lr: float, the learning rate
+      - resolution: int, the resolution of the quantized normal
     """
     super(Prior, self).__init__()
 
@@ -37,26 +42,22 @@ class Prior(L.LightningModule):
     self._latent_size = latent_size
     self._max_len = max_len
     self._seq_out_len = seq_out_len
+    self._resolution = resolution
 
-    self._projection = nn.Sequential(
-      nn.LayerNorm(latent_size),
-      nn.Linear(latent_size, d_model)
-    )
-    encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
-    self._encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
+    self._quantized_normal = QuantizedNormal(resolution=self._resolution)
+
+
+    self._embedding = nn.Embedding(self._resolution, self._d_model // self._latent_size)
     self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
     # self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
+
+    encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
+    self._encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
+
     self._activation = nn.ReLU()
     self._dropout = nn.Dropout(dropout)
 
-    # seq2seq
-    self._out = nn.Sequential(
-      nn.LayerNorm(d_model * max_len),
-      nn.Linear(d_model * max_len, latent_size * seq_out_len)
-    )
-
-    # Mean squared error loss
-    self._loss = nn.MSELoss()
+    self._fc = nn.Linear(d_model*max_len, latent_size*resolution)
 
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -65,16 +66,24 @@ class Prior(L.LightningModule):
     """
     # permute to comply with transformer shape
     x = x.permute(1, 0, 2) # => [seq_len, batch_size, latent_size]
+    seq_len, batch_size, latent_size = x.size()
 
-    # project to transformer space
-    u = self._projection(x) # => [seq_len, batch_size, d_model]
+    # quantize to _resoltion_ classes
+    x = self._quantized_normal.encode(x) # [seq_len, batch_size, latent_size]
+
+    # embed quantised values
+    emb = self._embedding(x) # => [seq_len, batch_size, d_model]
+    emb = emb.view(seq_len, batch_size, -1) # => [seq_len, batch_size, d_model*latent_size]
 
     # add positional encoding
-    pos = self._positional_encoding(u)
+    emb = self._positional_encoding(emb) # => [seq_len, batch_size, d_model]
 
     # encode in causal mode
-    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0)) * float('-inf'), diagonal=1).to(pos.device)
-    enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
+    # causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0)) * float('-inf'), diagonal=1).to(pos.device) # the mask is not justified here, since its not autoregressive
+    # enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
+    
+    # encode in non-causal mode
+    enc = self._encoder(emb)
 
     # non-linearity
     act = self._activation(enc)
@@ -86,15 +95,15 @@ class Prior(L.LightningModule):
     out = self._dropout(out)
 
     # flatten
-    out = out.reshape(out.size(0), -1) # => [batch_size, seq_len * d_model]
+    out = out.reshape(batch_size, -1) # => [batch_size, seq_len*d_model]
 
-    # predict next code sequence
-    out = self._out(out) # => [batch_size, n_latents * seq_out_len]
+    # predict next code
+    fc_out = self._fc(out) # => [batch_size, resoltion*latent_size]
 
-    # reshape to sequence
-    out = out.reshape(out.size(0), -1, self._latent_size) # => [batch_size, seq_out_len, n_latents]
+    # reshape to [batch_size, latent_size, quantization_channels]
+    logits = fc_out.view(batch_size, latent_size, self._resolution)
 
-    return out
+    return logits
 
 
   def training_step(self, batch, batch_idx):
@@ -128,11 +137,12 @@ class Prior(L.LightningModule):
       - batch: torch.Tensor[batch_size, seq_len, latent_size], the batch of latent codes sequences
     """
     x = batch[:, :self._max_len, :]
-    y = batch[:, self._max_len:self._max_len+self._seq_out_len, :]
+    y = batch[:, self._max_len, :]
 
-    y_hat = self(x)
+    logits = self(x)
+    target = self._quantized_normal.encode(y)
 
-    loss = self._loss(y_hat, y)
+    loss = F.cross_entropy(logits.permute(0, 2, 1), target)
 
     return loss
   

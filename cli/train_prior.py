@@ -7,8 +7,8 @@ import os
 
 from torch.utils.data import DataLoader, random_split
 
-from ddsp.prior import Prior, PriorDataset
-from ddsp.prior.prior_dataset import DummyMultivariateSequenceDataset
+from ddsp.prior import Prior, PriorDataset, DiscretePrior
+from ddsp.prior.prior_dataset import DummyMultivariateSequenceDataset, DummySinewaveDataset
 from ddsp.utils import find_checkpoint
 
 import torch
@@ -19,8 +19,9 @@ if __name__ == '__main__':
   parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
   parser.add_argument('--sequence_length', type=int, default=64, help='Number of the preceding latent codes')
-  parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
+  parser.add_argument('--embedding_dim', type=int, default=32, help='Embedding dimensionality')
   parser.add_argument('--n_layers', type=int, default=6, help='Number of layers in the transformer')
+  parser.add_argument('--resolution', type=int, default=64, help='Resolution of the quantized normal')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--training_dir', type=str, default='training/prior', help='Directory to save the training logs')
@@ -34,7 +35,6 @@ if __name__ == '__main__':
   config = parser.parse_args()
 
   seq_len = config.sequence_length
-  seq_out_len = config.sequence_length
 
   # Create training directory
   training_path = os.path.join(config.training_dir, config.model_name)
@@ -44,15 +44,17 @@ if __name__ == '__main__':
   dataset = PriorDataset(
     audio_dataset_path=config.dataset_path,
     encoding_model_path=config.model_path,
-    sequence_length=seq_len+seq_out_len,
+    sequence_length=seq_len+1,
     sampling_rate=config.fs,
     device=config.device,
     # db_file=os.path.join('prior_datasets', config.model_name + '.hdf5')
   )
 
   # Dummy dataset
-  # dataset = DummyMultivariateSequenceDataset(num_features=16, seq_length=config.sequence_length, n_examples=10000)
+  # dataset = DummyMultivariateSequenceDataset(num_features=16, seq_length=config.sequence_length, n_examples=100000)
   # normalization_dict = {'mean': 0.0, 'var': 1.0}
+
+  # dataset = DummySinewaveDataset(seq_length=config.sequence_length, latents=16)
 
 
   # Split into training and validation
@@ -63,14 +65,14 @@ if __name__ == '__main__':
   latent_size = dataset[0][0].shape[-1]
 
   # Core model
-  prior = Prior(
+  prior = DiscretePrior(
     latent_size=latent_size,
     dropout=config.dropout,
+    resolution=config.resolution,
     lr=config.lr,
-    d_model=config.d_model,
+    embedding_dim=config.embedding_dim,
     num_layers=config.n_layers,
     max_len=seq_len,
-    seq_out_len=seq_out_len
   )
 
   # Setup the logger
