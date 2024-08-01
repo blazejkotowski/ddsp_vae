@@ -8,7 +8,15 @@ import lightning as L
 from typing import Dict
 
 class Prior(L.LightningModule):
-  def __init__(self, latent_size: int = 8, d_model: int = 512, nhead: int = 8, num_layers: int = 6, dropout: float = 0.1, max_len: int = 256, lr: float = 1e-4, normalization_dict: Dict[str, float] = {'mean': 0.0, 'var': 1.0}):
+  def __init__(self, 
+               latent_size: int = 8, 
+               d_model: int = 512, 
+               nhead: int = 8, 
+               num_layers: int = 6, 
+               dropout: float = 0.1, 
+               max_len: int = 256,
+               seq_out_len: int = 64,
+               lr: float = 1e-4):
     """
     Arguments:
       - latent_size: int, the size of the latent code
@@ -17,8 +25,8 @@ class Prior(L.LightningModule):
       - num_layers: int, the number of sub-encoder-layers in the encoder
       - dropout: float, the dropout value
       - max_len: int, the maximum length of the sequence
+      - seq_out_len: int, the length of the output sequence
       - lr: float, the learning rate
-      - normalization_dict: Dict[str, float], the normalization dictionary containing original mean and variance of the dataset
     """
     super(Prior, self).__init__()
 
@@ -28,17 +36,24 @@ class Prior(L.LightningModule):
     self._lr = lr
     self._latent_size = latent_size
     self._max_len = max_len
+    self._seq_out_len = seq_out_len
 
-    self._projection = nn.Linear(latent_size, d_model)
+    self._projection = nn.Sequential(
+      nn.LayerNorm(latent_size),
+      nn.Linear(latent_size, d_model)
+    )
     encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
     self._encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
-    # self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
-    self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
+    self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
+    # self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
     self._activation = nn.ReLU()
     self._dropout = nn.Dropout(dropout)
 
-    # Entire sequence predicting one code
-    self._out = nn.Linear(d_model * max_len, latent_size)
+    # seq2seq
+    self._out = nn.Sequential(
+      nn.LayerNorm(d_model * max_len),
+      nn.Linear(d_model * max_len, latent_size * seq_out_len)
+    )
 
     # Mean squared error loss
     self._loss = nn.MSELoss()
@@ -71,15 +86,21 @@ class Prior(L.LightningModule):
     out = self._dropout(out)
 
     # flatten
-    stacked = out.reshape(out.size(0), -1) # => [batch_size, seq_len * d_model]
+    out = out.reshape(out.size(0), -1) # => [batch_size, seq_len * d_model]
 
-    # predict next code
-    return self._out(stacked) # => [batch_size, n_latents]
+    # predict next code sequence
+    out = self._out(out) # => [batch_size, n_latents * seq_out_len]
+
+    # reshape to sequence
+    out = out.reshape(out.size(0), -1, self._latent_size) # => [batch_size, seq_out_len, n_latents]
+
+    return out
 
 
   def training_step(self, batch, batch_idx):
-    loss = self._scheduled_sampling_step(batch, batch_idx)
+    loss = self._step(batch)
     self.log('train_loss', loss, prog_bar=True)
+    self.log('lr', self.trainer.optimizers[0].param_groups[0]['lr'], prog_bar=True)
     return loss
 
 
@@ -90,7 +111,15 @@ class Prior(L.LightningModule):
 
 
   def configure_optimizers(self):
-    return torch.optim.Adam(self.parameters(), lr=self._lr)
+    # reduce on plateau combined with adam optimizer
+    optimizer = torch.optim.Adam(self.parameters(), lr=self._lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1, verbose=True, threshold=1e-6)
+    
+    return {
+      'optimizer': optimizer,
+      'lr_scheduler': scheduler,
+      'monitor': 'val_loss'
+    }
 
 
   def _step(self, batch):
@@ -99,7 +128,7 @@ class Prior(L.LightningModule):
       - batch: torch.Tensor[batch_size, seq_len, latent_size], the batch of latent codes sequences
     """
     x = batch[:, :self._max_len, :]
-    y = batch[:, self._max_len, :]
+    y = batch[:, self._max_len:self._max_len+self._seq_out_len, :]
 
     y_hat = self(x)
 
@@ -107,43 +136,43 @@ class Prior(L.LightningModule):
 
     return loss
   
-  def _scheduled_sampling_step(self, batch, batch_idx):
-    """
-    Scheduled sampling is a technique used in training sequence-to-sequence models that helps with the problem of exposure bias.
-    Arguments:
-      - batch: torch.Tensor[batch_size, seq_len, latent_size], the batch of latent codes sequences
-    """
-    x = batch[:, :self._max_len, :]
-    y = batch[:, self._max_len:, :]
+  # def _scheduled_sampling_step(self, batch, batch_idx):
+  #   """
+  #   Scheduled sampling is a technique used in training sequence-to-sequence models that helps with the problem of exposure bias.
+  #   Arguments:
+  #     - batch: torch.Tensor[batch_size, seq_len, latent_size], the batch of latent codes sequences
+  #   """
+  #   x = batch[:, :self._max_len, :]
+  #   y = batch[:, self._max_len:self._seq_out_len, :]
 
-    seq_len = y.size(1)
-    outputs = []
+  #   seq_len = y.size(1)
+  #   outputs = []
 
-    current_input = x.clone()
+  #   current_input = x.clone()
 
-    for t in range(seq_len):
-      y_hat = self(current_input)
-      y_hat = y_hat.squeeze(1)
+  #   for t in range(seq_len):
+  #     y_hat = self(current_input)
+  #     y_hat = y_hat.squeeze(1)
 
-      outputs.append(y_hat)
+  #     outputs.append(y_hat)
 
-      # Scheduled sampling
-      # Compute the probability of using the true previous value
-      total_steps = self.trainer.max_epochs * len(self.trainer.train_dataloader)
-      current_step = self.global_step
-      teacher_forcing_ratio = max(0, 1 - current_step / total_steps)
+  #     # Scheduled sampling
+  #     # Compute the probability of using the true previous value: teacher forcing at the beginning of cycle, model forcing at the end
+  #     cycle_steps = len(self.trainer.train_dataloader)*0.1 # 10% of the training data for cycle (10 cycles per epoch)
+  #     current_epoch_step = self.global_step % cycle_steps
+  #     teacher_forcing_ratio = max(0, 1 - current_epoch_step / cycle_steps)
 
-      self.log('tf_ratio', teacher_forcing_ratio, prog_bar=True)
+  #     self.log('tf_ratio', teacher_forcing_ratio, prog_bar=True)
 
-      current_input = current_input[:, 1:, :]
-      if torch.rand(1).item() < teacher_forcing_ratio:
-        current_input = torch.cat([current_input, y[:, t-1, :].unsqueeze(1)], dim=1)
-      else:
-        current_input = torch.cat([current_input, y_hat.unsqueeze(1)], dim=1)
+  #     current_input = current_input[:, 1:, :]
+  #     if torch.rand(1).item() < teacher_forcing_ratio:
+  #       current_input = torch.cat([current_input, y[:, t-1, :].unsqueeze(1)], dim=1)
+  #     else:
+  #       current_input = torch.cat([current_input, y_hat.unsqueeze(1)], dim=1)
 
-    outputs = torch.stack(outputs, dim=1)
-    loss = self._loss(outputs, y)
-    return loss
+  #   outputs = torch.stack(outputs, dim=1)
+  #   loss = self._loss(outputs, y)
+  #   return loss
 
 class LearnablePositionalEncoding(nn.Module):
   def __init__(self, d_model: int, max_len: int = 256, dropout: float = 0.1):

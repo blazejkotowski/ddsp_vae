@@ -36,9 +36,9 @@ class PriorDataset(Dataset):
     self._encoder.streaming = False
 
     audio_tensors = self._load_audio_dataset(audio_dataset_path)
-    encodings = self._encode_audio_dataset(audio_tensors)
+    self._encodings = self._encode_audio_dataset(audio_tensors)
 
-    self._encodings, self.normalization_dict = self._normalize(encodings)
+    # self._encodings, self.normalization_dict = self._normalize(encodings)
 
 
   def __len__(self) -> int:

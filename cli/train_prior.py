@@ -16,9 +16,9 @@ torch.set_float32_matmul_precision('medium')
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+  parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
-  parser.add_argument('--sequence_length', type=int, default=5, help='Number of the preceding latent codes')
+  parser.add_argument('--sequence_length', type=int, default=64, help='Number of the preceding latent codes')
   parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
   parser.add_argument('--n_layers', type=int, default=6, help='Number of layers in the transformer')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
@@ -29,10 +29,12 @@ if __name__ == '__main__':
   parser.add_argument('--model_name', type=str, help='Name of the model', required=True)
   parser.add_argument('--model_path', type=str, help='Path to the encoding model', required=True)
   parser.add_argument('--dataset_path', help='Directory of the training sound/sounds', required=True)
-  parser.add_argument('--early_stopping', type=bool, default=True, help='Enable early stopping')
+  parser.add_argument('--early_stopping', type=bool, default=False, help='Enable early stopping')
   parser.add_argument('--max_epochs', type=int, default=10, help='Maximum number of epochs to train')
   config = parser.parse_args()
 
+  seq_len = config.sequence_length
+  seq_out_len = config.sequence_length
 
   # Create training directory
   training_path = os.path.join(config.training_dir, config.model_name)
@@ -42,12 +44,11 @@ if __name__ == '__main__':
   dataset = PriorDataset(
     audio_dataset_path=config.dataset_path,
     encoding_model_path=config.model_path,
-    sequence_length=config.sequence_length,
+    sequence_length=seq_len+seq_out_len,
     sampling_rate=config.fs,
-    device=config.device
+    device=config.device,
+    # db_file=os.path.join('prior_datasets', config.model_name + '.hdf5')
   )
-  # For denormalizing
-  normalization_dict = dataset.normalization_dict
 
   # Dummy dataset
   # dataset = DummyMultivariateSequenceDataset(num_features=16, seq_length=config.sequence_length, n_examples=10000)
@@ -68,13 +69,12 @@ if __name__ == '__main__':
     lr=config.lr,
     d_model=config.d_model,
     num_layers=config.n_layers,
-    normalization_dict=normalization_dict,
-    max_len=config.sequence_length,
+    max_len=seq_len,
+    seq_out_len=seq_out_len
   )
 
   # Setup the logger
   logger = TensorBoardLogger(training_path, name=config.model_name)
-
 
   # Early stopping callback
   callbacks = []
@@ -98,7 +98,7 @@ if __name__ == '__main__':
     logger=logger,
     max_epochs = config.max_epochs
   )
-
+ 
   # Try to find previous checkpoint
   ckpt_path = find_checkpoint(training_path, return_none=True) if not config.force_restart else None
   if ckpt_path is not None:
