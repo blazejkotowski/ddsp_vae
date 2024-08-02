@@ -16,6 +16,7 @@ class PriorDataset(Dataset):
                audio_dataset_path: str,
                sequence_length: int,
                sampling_rate: int = 44100,
+               stride_factor: float = 0.25,
                device: str = None):
     """
     Arguments:
@@ -23,11 +24,13 @@ class PriorDataset(Dataset):
       - audio_dataset_path: str, the path to the dataset
       - sequence_length: int, the length of the preceding latent code sequence, in samples
       - sampling_rate: int, the sampling rate of the audio
+      - stride_factor: float, the stride factor for the sequence (0.25 means 25% overlap)
       - device: str, the device to use. None will use the originally saved device. [None, 'cuda', 'cpu'].
     """
     self._device = device
     self._sequence_length = sequence_length
     self._sampling_rate = sampling_rate
+    self._stride_factor = stride_factor
 
     vae_model = jit.load(encoding_model_path, map_location=device).pretrained.to(device)
     self._resampling_factor = vae_model.resampling_factor
@@ -97,13 +100,19 @@ class PriorDataset(Dataset):
         # mu_scale = mu_scale[..., :1] # try only one (the first) latent variable
 
         # Overlapping, shifting window chunks
-        for i in range(mu_scale.size(0) - (self._sequence_length*2)):
-          encodings.append(mu_scale[i:i+self._sequence_length*2])
+        # for i in range(mu_scale.size(0) - (self._sequence_length)):
+        #   encodings.append(mu_scale[i:i+self._sequence_length])
 
         # # Non-overlapping chunks
-        # for chunk in mu_scale.split(self._sequence_length+1):
-        #   if chunk.size(0) == self._sequence_length+1:
+        # for chunk in mu_scale.split(self._sequence_length):
+        #   if chunk.size(0) == self._sequence_length:
         #     encodings.append(chunk)
+
+        # Stratified sampling with stride
+        stride = int(self._sequence_length * self._stride_factor)
+        num_chunks = (mu_scale.size(0) - self._sequence_length) // stride + 1
+        for i in range(num_chunks):
+          encodings.append(mu_scale[i*stride:i*stride+self._sequence_length])
 
     return encodings
 
