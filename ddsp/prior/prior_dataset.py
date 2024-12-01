@@ -16,7 +16,7 @@ class PriorDataset(Dataset):
                audio_dataset_path: str,
                sequence_length: int,
                sampling_rate: int = 44100,
-               stride_factor: float = 0.25,
+               stride_factor: float = 1,
                device: str = None):
     """
     Arguments:
@@ -129,9 +129,9 @@ class PriorDataset(Dataset):
     audio_tensors = []
     for filepath in glob(os.path.join(path, '**', '*.wav'), recursive=True):
       x = self._load_audio_file(filepath)
-      audio = torch.from_numpy(x)
+      audio = torch.from_numpy(x).to(self._device)
       if audio.size(0) >= self._resampling_factor:
-        audio_tensors.append(audio.to(self._device))
+        audio_tensors.append(audio)
 
     return audio_tensors
 

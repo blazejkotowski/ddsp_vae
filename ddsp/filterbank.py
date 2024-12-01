@@ -27,7 +27,8 @@ class FilterBank(nn.Module):
                lowpass_cutoff: float = 20,
                transition_width: float = 0.2,
                stopband_attenuation: float = 50.0,
-               fs: int = 44100):
+               fs: int = 44100,
+               device='cuda'):
     super().__init__()
     self._n_filters = n_filters - 2 # lowpass and highpass filters are added in default at the limits of the spectrum
     self._stopband_attenuation = stopband_attenuation
@@ -39,7 +40,7 @@ class FilterBank(nn.Module):
 
     self._filters = self._build_filterbank()
 
-    self.noisebands = torch.from_numpy(np.array(self._bake_noisebands()))
+    self.noisebands = torch.from_numpy(np.array(self._bake_noisebands())).to(device)
 
 
   def _build_filterbank(self):

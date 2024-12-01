@@ -15,7 +15,8 @@ class Prior(L.LightningModule):
                num_layers: int = 6,
                dropout: float = 0.1,
                max_len: int = 256,
-               lr: float = 1e-4):
+               lr: float = 1e-4,
+               device='cuda'):
     """
     Arguments:
       - latent_size: int, the size of the latent code
@@ -25,10 +26,13 @@ class Prior(L.LightningModule):
       - dropout: float, the dropout value
       - max_len: int, the maximum length of the sequence
       - lr: float, the learning rate
+      - device: str, the torch device to use
     """
     super(Prior, self).__init__()
 
     self.save_hyperparameters()
+
+    self._device = device
 
     self._d_model = d_model
     self._lr = lr
@@ -39,12 +43,15 @@ class Prior(L.LightningModule):
       nn.LayerNorm(latent_size),
       nn.Linear(latent_size, d_model)
     )
+
+    # self._projection = nn.Linear(latent_size, d_model)
+
     encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
     self._encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
-    self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
-    # self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout)
+    self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout, device=self._device)
+    # self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout, device=self._device)
     self._activation = nn.ReLU()
-    self._dropout = nn.Dropout(dropout)
+    # self._dropout = nn.Dropout(dropout)
 
     self._out = nn.Linear(d_model, latent_size)
 
@@ -55,7 +62,7 @@ class Prior(L.LightningModule):
     # )
 
     # Mean squared error loss
-    self._loss = nn.MSELoss()
+    self._loss = nn.MSELoss(reduce=False)
 
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -72,13 +79,17 @@ class Prior(L.LightningModule):
     pos = self._positional_encoding(u)
 
     # Construct causal mask
-    causal_mask = ~torch.triu(torch.ones(pos.size(0), pos.size(0)), diagonal=1).bool().to(pos.device)
+    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0), device=self._device), diagonal=1).bool().to(pos.device)
 
-    # Mask certain positions for better generalization (idea code from Behzad, cite if published)
-    teacher_forcing_ratio = 0.75
-    indices = torch.rand(causal_mask.size(0))
-    indices = indices > teacher_forcing_ratio
-    causal_mask[:, indices] = False
+    # if self.training:
+    #   # Mask certain positions for better generalization (idea code from Behzad, cite if published)
+    #   teacher_forcing_ratio = 0.7
+    #   indices = torch.rand(causal_mask.size(0))
+    #   indices = indices > teacher_forcing_ratio
+    #   causal_mask[:, indices] = True
+
+    #   # # Every position should be to attend at least itself (unmask the diagonal)
+    #   causal_mask.fill_diagonal_(False)
 
     # encode using transformer encoder
     enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
@@ -90,7 +101,7 @@ class Prior(L.LightningModule):
     act = act.permute(1, 0, 2) # => [batch_size, seq_len, d_model]
 
     # dropout
-    act = self._dropout(act) # => [batch_size, seq_len, d_model]
+    # act = self._dropout(act) # => [batch_size, seq_len, d_model]
 
     # project back to latent space
     out = self._out(act) # => [batch_size, seq_len, latent_size]
@@ -112,9 +123,8 @@ class Prior(L.LightningModule):
 
 
   def configure_optimizers(self):
-    # reduce on plateau combined with adam optimizer
     optimizer = torch.optim.Adam(self.parameters(), lr=self._lr)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=1, verbose=True, threshold=1e-4)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False, threshold=1e-6)
 
     scheduler = {
       'scheduler': lr_scheduler,
@@ -135,12 +145,12 @@ class Prior(L.LightningModule):
 
     y_hat = self(x)
 
-    loss = self._loss(y_hat, y)
+    loss = self._loss(y_hat, y).nanmean()
 
     return loss
 
 class LearnablePositionalEncoding(nn.Module):
-  def __init__(self, d_model: int, max_len: int = 256, dropout: float = 0.1):
+  def __init__(self, d_model: int, max_len: int = 256, dropout: float = 0.1, device='cuda'):
     """
     Arguments:
       - d_model: int, the model dimension
@@ -149,7 +159,8 @@ class LearnablePositionalEncoding(nn.Module):
     """
     super(LearnablePositionalEncoding, self).__init__()
 
-    self._positional_encoding = nn.Parameter(torch.empty(max_len, 1, d_model))
+    self._device = device
+    self._positional_encoding = nn.Parameter(torch.empty(max_len, 1, d_model, device=self._device))
     nn.init.uniform_(self._positional_encoding, -0.02, 0.02)
 
     self._dropout = nn.Dropout(dropout)
@@ -175,13 +186,14 @@ class FixedPositionalEncoding(nn.Module):
       max_len: the max. length of the incoming sequence (default=1024).
   """
 
-  def __init__(self, d_model, dropout=0.1, max_len=1024, scale_factor=1.0):
+  def __init__(self, d_model, dropout=0.1, max_len=1024, scale_factor=1.0, device='cuda'):
     super(FixedPositionalEncoding, self).__init__()
+    self._device = device
     self.dropout = nn.Dropout(p=dropout)
 
-    pe = torch.zeros(max_len, d_model)  # positional encoding
-    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-    div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+    pe = torch.zeros(max_len, d_model, device=self._device)  # positional encoding
+    position = torch.arange(0, max_len, dtype=torch.float, device=self._device).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_model, 2, device=self._device).float() * (-math.log(10000.0) / d_model))
     pe[:, 0::2] = torch.sin(position * div_term)
     pe[:, 1::2] = torch.cos(position * div_term)
     pe = scale_factor * pe.unsqueeze(0).transpose(0, 1)

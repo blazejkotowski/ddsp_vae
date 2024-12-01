@@ -79,6 +79,7 @@ class VariationalEncoder(nn.Module):
       - streaming: bool, streaming mode (realtime)
     """
     super().__init__()
+
     self.streaming = streaming
 
     self.resampling_factor = resampling_factor
@@ -188,7 +189,7 @@ class Decoder(nn.Module):
     self.inter_mlp = _make_mlp(hidden_size, output_mlp_layers, hidden_size)
 
     # Output layer predicting noiseband amplitudes, and sine frequencies and amplitudes
-    self.output_params = nn.Linear(hidden_size, n_bands + n_sines * 2)
+    self.output_params = nn.Linear(hidden_size, n_bands + n_sines * 2 + 1)
 
 
   def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

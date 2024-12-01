@@ -62,18 +62,18 @@ class ScriptedDDSP(nn_tilde.Module):
   def decode(self, latents: torch.Tensor):
     synth_params = self.pretrained.decoder(latents.permute(0, 2, 1))
     audio = self.pretrained._synthesize(*synth_params)
-    return audio
+    return audio.float()
 
   @torch.jit.export
   def encode(self, audio: torch.Tensor):
     mu, scale = self.pretrained.encoder(audio.squeeze(1))
     # latents = self.pretrained.encoder.reparametrize(mu, logvar)
     latents, _ = self.pretrained.encoder.reparametrize(mu, scale)
-    return latents.permute(0, 2, 1)
+    return latents.permute(0, 2, 1).float()
 
   @torch.jit.export
   def forward(self, audio: torch.Tensor):
-    return self.pretrained(audio.squeeze(1))
+    return self.pretrained(audio.squeeze(1)).float()
 
 
 class ONNXDDSP(torch.nn.Module):
@@ -115,7 +115,7 @@ if __name__ == '__main__':
   if format not in ['ts', 'onnx']:
     raise ValueError(f'Invalid format: {format}, supported formats are: ts, onnx')
 
-  ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=True).to('cpu')
+  ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=True, device='cpu').to('cpu')
   if format == 'onnx':
     ddsp.eval()
     scripted = ONNXDDSP(ddsp).to('cpu')

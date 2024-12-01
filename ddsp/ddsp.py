@@ -3,11 +3,26 @@ import torch
 
 import numpy as np
 import auraloss
+import laion_clap
 
 from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.synths import SineSynth, NoiseBandSynth
 
 from typing import List, Tuple, Dict
+
+class CLAPLoss(torch.nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.clap = laion_clap.CLAP_Module(enable_fusion=False, device='cuda')
+    self.clap.requires_grad_(False)
+    self.clap.load_ckpt()
+
+  def forward(self, x: torch.tensor, y: torch.tensor):
+    with torch.no_grad():
+      x_emb = self.clap.get_audio_embedding_from_data(x.reshape(x.shape[0], -1).float(), use_tensor=True)
+      y_emb = self.clap.get_audio_embedding_from_data(y.reshape(y.shape[0], -1).float(), use_tensor=True)
+
+    return torch.nn.functional.mse_loss(x_emb, y_emb, reduction='mean')
 
 class DDSP(L.LightningModule):
   """
@@ -27,6 +42,7 @@ class DDSP(L.LightningModule):
     - learning_rate: float, the learning rate for the optimizer
     - streaming: bool, whether to run the model in streaming mode
     - kld_weight: float, the weight for the KLD loss
+    - device: str, the device to run the model on
   """
   def __init__(self,
                n_filters: int = 2048,
@@ -40,19 +56,28 @@ class DDSP(L.LightningModule):
                resampling_factor: int = 32,
                learning_rate: float = 1e-3,
                kld_weight: float = 0.00025,
-               streaming: bool = False):
+               streaming: bool = False,
+               device: str = 'cuda'):
     super().__init__()
     # Save hyperparameters in the checkpoints
     self.save_hyperparameters()
+    self._device = device
     self.fs = fs
     self.latent_size = latent_size
     self.resampling_factor = resampling_factor
 
-    # Noisebands synthesiserg
-    self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=self.resampling_factor)
+    if n_filters == 0 and n_sines == 0:
+      raise ValueError("At least one of n_filters or n_sines must be greater than 0.")
+
+    # Noisebands synthesiser
+    self._noisebands_synth = None
+    if n_filters > 0:
+      self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=self.resampling_factor, device=self._device)
 
     # Sine synthesiser
-    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=self.resampling_factor, streaming=streaming)
+    self._sine_synth = None
+    if n_sines > 0:
+      self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=self.resampling_factor, streaming=streaming)
 
     # ELBO regularization params
     self._beta = 0
@@ -79,7 +104,8 @@ class DDSP(L.LightningModule):
     )
 
     # Define the loss
-    self._recons_loss = self._construct_mrstft_loss()
+    self._recons_loss = self._construct_mrstft_loss() # MRSTFT loss
+    # self._recons_loss = CLAPLoss() # CLAP loss
 
     # Learning rate
     self._learning_rate = learning_rate
@@ -129,21 +155,24 @@ class DDSP(L.LightningModule):
     self.log("kld_loss", losses["kld_loss"], prog_bar=True, logger=True)
     self.log("train_loss", losses["loss"], prog_bar=True, logger=True)
     self.log("beta", self._beta, prog_bar=True, logger=True)
+    self.log('lr', self.trainer.optimizers[0].param_groups[0]['lr'], prog_bar=True)
+
 
     return losses["loss"]
 
 
   def validation_step(self, x_audio: torch.Tensor, batch_idx: int) -> torch.Tensor:
     """Compute the loss for validation data"""
-    y_audio, losses = self._autoencode(x_audio)
+    with torch.no_grad():
+      y_audio, losses = self._autoencode(x_audio)
 
     loss = losses["recons_loss"]
 
-    self.log("val_loss", loss, prog_bar=False, logger=True)
+    self.log("val_loss", loss, prog_bar=True, logger=True)
 
-    if self._last_validation_in is None:
-      self._last_validation_in = x_audio
-      self._last_validation_out = y_audio.squeeze(1)
+    # if self._last_validation_in is None:
+    #   self._last_validation_in = x_audio
+    #   self._last_validation_out = y_audio.squeeze(1)
 
     return y_audio
 
@@ -185,29 +214,40 @@ class DDSP(L.LightningModule):
     return y_audio, losses
 
 
-  def on_validation_epoch_end(self):
-    """At the end of the validation epoch, log the validation audio"""
-    if self._last_validation_out is not None:
-      device = self._last_validation_out.device
-    else:
-      device = 'cpu'
+  # def on_validation_epoch_end(self):
+  #   """At the end of the validation epoch, log the validation audio"""
+  #   if self._last_validation_out is not None:
+  #     device = self._last_validation_out.device
+  #   else:
+  #     device = self.device
 
-    audio = torch.FloatTensor(0).to(device) # Concatenated audio
-    silence = torch.zeros(1, int(self.fs/2)).to(device) # 0.5s silence
-    for input, output in zip(self._last_validation_in, self._last_validation_out):
-      audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
+  #   # audio = torch.FloatTensor(0).to(device) # Concatenated audio
+  #   # silence = torch.zeros(1, int(self.fs/2)).to(device) # 0.5s silence
+  #   # for input, output in zip(self._last_validation_in, self._last_validation_out):
+  #   #   audio = torch.cat((audio, input.unsqueeze(0), silence, output.unsqueeze(0), silence.repeat(1, 3)), dim=-1)
 
-    audio = audio.clip_(-1, 1) # Clip the audio to stay in range
-    self.logger.experiment.add_audio("audio_validation", audio, self._validation_index, self.fs)
+  #   # audio = audio.clip_(-1, 1) # Clip the audio to stay in range
+  #   # self.logger.experiment.add_audio("audio_validation", audio, self._validation_index, self.fs)
 
-    self._last_validation_in = None
-    self._last_validation_out = None
-    self._validation_index += 1
+  #   self._last_validation_in = None
+  #   self._last_validation_out = None
+  #   self._validation_index += 1
 
 
   def configure_optimizers(self):
     """Configure the optimizer for the model"""
-    return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+    # return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+
+    optimizer = torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=100, verbose=False, threshold=1e-5)
+
+    scheduler = {
+      'scheduler': lr_scheduler,
+      'monitor': 'val_loss',
+      'interval': 'epoch'
+    }
+
+    return [optimizer], [scheduler]
 
 
   def _synthesize(self, noiseband_amps: torch.Tensor, sine_freqs: torch.Tensor, sine_amps: torch.Tensor) -> torch.Tensor:
@@ -220,9 +260,17 @@ class DDSP(L.LightningModule):
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
-    sines = self._sine_synth(sine_freqs, sine_amps)
-    noisebands = self._noisebands_synth(noiseband_amps)
-    return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
+    if self._sine_synth is not None:
+      sines = self._sine_synth(sine_freqs, sine_amps)
+    if self._noisebands_synth is not None:
+      noisebands = self._noisebands_synth(noiseband_amps)
+
+    if self._sine_synth is not None and self._noisebands_synth is not None:
+      return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
+    elif self._sine_synth is not None:
+      return sines
+    elif self._noisebands_synth is not None:
+      return noisebands
 
   def _reconstruction_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Computes the reconstruction loss"""
@@ -244,4 +292,3 @@ class DDSP(L.LightningModule):
     return auraloss.freq.MultiResolutionSTFTLoss(fft_sizes=[8192, 4096, 2048, 1024, 512, 128, 32],
                                                 hop_sizes=fft_sizes//4,
                                                 win_lengths=fft_sizes)
-
