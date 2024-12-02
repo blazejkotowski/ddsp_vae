@@ -42,6 +42,8 @@ class Prior(L.LightningModule):
 
     self._device = device
 
+    self.eval_mode = False
+
     self._normalization_dict = normalization_dict
 
     self._d_model = embedding_dim * latent_size
@@ -54,7 +56,7 @@ class Prior(L.LightningModule):
     self._quantizer = MuLawEncoding(self._quantization_channels)
     self._dequantizer = MuLawDecoding(self._quantization_channels)
 
-    self._embedding = nn.Embedding(self._quantization_channels * self._latent_size, self._embedding_dim)
+    self._embedding = nn.Embedding(self._quantization_channels, self._embedding_dim)
 
     encoder_layer = TransformerEncoderLayer(d_model=self._d_model, nhead=nhead, dropout=dropout)
     self._encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -73,7 +75,7 @@ class Prior(L.LightningModule):
   def normalize(self, x: torch.Tensor) -> torch.Tensor:
     """
     Normalize the latent codes.
-    
+
     Arguments:
       - x: torch.Tensor[batch_size, seq_len, latent_size], the sequences of latent codes
     Returns:
@@ -87,7 +89,7 @@ class Prior(L.LightningModule):
   def denormalize(self, x: torch.Tensor) -> torch.Tensor:
     """
     Denormalize the latent codes.
-    
+
     Arguments:
       - x: torch.Tensor[batch_size, seq_len, latent_size], the sequences of normalized latent codes
     Returns:
@@ -97,11 +99,11 @@ class Prior(L.LightningModule):
     return x * (max - min) + min
     # return x * self._normalizatisleon_dict['var'] + self._normalization_dict['mean']
 
-  
+
   def sample(self, logits: torch.Tensor, temperature: float = 0.0) -> torch.Tensor:
     """
     Sample from the logits.
-    
+
     Arguments:
       - logits: torch.Tensor[batch_size, seq_len, latent_size, quantization_channels], the logits
       - temperature: float, the temperature (how much should softmax smooth the distribution)
@@ -127,7 +129,7 @@ class Prior(L.LightningModule):
 
     # flattent latent codes
     # embed the latent codes
-    indices = x.long() + self._quantization_channels * torch.arange(self._latent_size, device=self._device).reshape(1, 1, -1)
+    indices = x.long() # + self._quantization_channels * torch.arange(self._latent_size, device=self._device).reshape(1, 1, -1)
     embed = self._embedding(indices) # * math.sqrt(self._embedding_dim) # => [seq_len, batch_size, embedding_dim]
 
     # add positional encoding
@@ -151,7 +153,10 @@ class Prior(L.LightningModule):
     #   causal_mask.fill_diagonal_(False)
 
     # encode using transformer encoder
-    enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
+    if not self.eval_mode:
+      enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
+    else:
+      enc = self._encoder(pos) * math.sqrt(self._d_model)
 
     # permute back
     enc = enc.permute(1, 0, 2) # => [batch_size, seq_len, d_model]
@@ -221,7 +226,7 @@ class Prior(L.LightningModule):
     # Calcualte mean square error on real values
     y_hat = self.denormalize(self._dequantizer(y_hat_discrete)) # [batch_size, seq_len, latent_size]
     mse = mse_loss(y_hat, y, reduction='none').nanmean()
-    
+
     # Calculate cross-entropy loss
     ce_loss = cross_entropy(logits.permute(0, 3, 1, 2).view(batch_size, self._quantization_channels, -1), y_discrete.view(batch_size, -1), reduce=False).nanmean()
 
