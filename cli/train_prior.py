@@ -12,15 +12,18 @@ from ddsp.prior.prior_dataset import DummyMultivariateSequenceDataset
 from ddsp.utils import find_checkpoint
 
 import torch
+torch.set_default_device('cuda')
 torch.set_float32_matmul_precision('medium')
+torch.set_default_dtype(torch.float32)
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
   parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
   parser.add_argument('--max_len', type=int, default=64, help='Number of the preceding latent codes')
-  parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
-  parser.add_argument('--n_layers', type=int, default=6, help='Number of layers in the transformer')
+  parser.add_argument('--embedding_dim', type=int, default=32, help='Embedding dimension')
+  parser.add_argument('--num_layers', type=int, default=6, help='Number of layers in the transformer')
+  parser.add_argument('--nhead', type=int, default=8, help='Number of heads in the transformer')
   parser.add_argument('--fs', type=int, default=44100, help='Sampling rate of the audio')
   parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
   parser.add_argument('--training_dir', type=str, default='training/prior', help='Directory to save the training logs')
@@ -32,6 +35,7 @@ if __name__ == '__main__':
   parser.add_argument('--dataset_stride_factor', type=float, default=0.25, help='Stride factor for the dataset')
   parser.add_argument('--early_stopping', type=bool, default=False, help='Enable early stopping')
   parser.add_argument('--max_epochs', type=int, default=10, help='Maximum number of epochs to train')
+  parser.add_argument('--quantization_channels', type=int, default=32, help='Number of quantization channels')
   config = parser.parse_args()
 
   # Create training directory
@@ -55,9 +59,10 @@ if __name__ == '__main__':
 
 
   # Split into training and validation
-  train_set, val_set = random_split(dataset, [0.9, 0.1])
-  train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
-  val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=False)
+  generator = torch.Generator(device=config.device).manual_seed(42)
+  train_set, val_set = random_split(dataset, [0.8, 0.2], generator=generator)
+  train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True, generator=generator)
+  val_loader = DataLoader(val_set, batch_size=config.batch_size, shuffle=False, generator=generator)
 
   latent_size = dataset[0][0].shape[-1]
 
@@ -66,9 +71,12 @@ if __name__ == '__main__':
     latent_size=latent_size,
     dropout=config.dropout,
     lr=config.lr,
-    d_model=config.d_model,
-    num_layers=config.n_layers,
+    embedding_dim=config.embedding_dim,
+    num_layers=config.num_layers,
+    nhead=config.nhead,
     max_len=config.max_len,
+    normalization_dict=dataset.normalization_dict,
+    quantization_channels=config.quantization_channels,
   )
 
   # Setup the logger

@@ -39,9 +39,9 @@ class PriorDataset(Dataset):
     self._encoder.streaming = False
 
     audio_tensors = self._load_audio_dataset(audio_dataset_path)
-    self._encodings = self._encode_audio_dataset(audio_tensors)
 
-    # self._encodings, self.normalization_dict = self._normalize(encodings)
+    encodings = self._encode_audio_dataset(audio_tensors)
+    self._encodings, self.normalization_dict = self._normalize(encodings)
 
 
   def __len__(self) -> int:
@@ -69,15 +69,19 @@ class PriorDataset(Dataset):
       - x: torch.Tensor, the normalized latent codes
     """
     all_x = torch.cat(x, dim = 0)
-    mean = all_x.mean(dim=0).detach().cpu().numpy()
-    var = all_x.var(dim=0).detach().cpu().numpy()
 
-    normalization_dict = {'mean': mean, 'var': var}
+    with torch.no_grad():
+      mean = all_x.mean(dim=0).to(self._device)
+      min = all_x.min(dim=0).values.to(self._device)
+      max = all_x.max(dim=0).values.to(self._device)
+      var = all_x.var(dim=0).to(self._device)
 
-    # normalized = [torch.from_numpy((item.cpu().numpy() - mean) / var).to(self._device) for item in x]
-    normalized = x
+    normalization_dict = {'mean': mean, 'var': var, 'min': min, 'max': max}
 
-    return normalized, normalization_dict
+    # normalized = [torch.from_numpy((item.cpu().numpy() - mean) / var, device=self._device) for item in x]
+    # normalized = x
+
+    return x, normalization_dict
 
 
   def _encode_audio_dataset(self, audio_tensors: List[torch.Tensor]):
