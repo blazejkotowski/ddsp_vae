@@ -34,6 +34,8 @@ class Prior(L.LightningModule):
 
     self._device = device
 
+    self.eval_mode = False
+
     self._d_model = d_model
     self._lr = lr
     self._latent_size = latent_size
@@ -109,6 +111,33 @@ class Prior(L.LightningModule):
     return out
 
 
+  def generate(self, prime: torch.Tensor, seq_len: int) -> torch.Tensor:
+    """
+    Arguments:
+      - prime: torch.Tensor[prime_len, latent_size], the preceding latent code sequence
+      - seq_len: int, the length of the generated sequence
+    Returns
+      - torch.Tensor[seq_len, latent_size], the generated latent code sequence
+    """
+    prime_len = prime.size(0)
+    self.eval()
+    output_seq = torch.full((seq_len, self._latent_size), fill_value=0, device=self.device, dtype=torch.float32)
+
+    output_seq[:prime.shape[0], :] = prime.clone()
+    x = prime.clone().unsqueeze(0)
+
+    for i in range(prime_len, seq_len):
+      with torch.no_grad():
+        y_hat = self(x)
+      x = torch.cat((x, y_hat[:, -1:, :]), dim=1)
+      output_seq[i, :] = y_hat.squeeze()[-1, :]
+
+      if x.size(1) > self._max_len:
+        x = x[:, -prime_len:, :]
+
+    return output_seq
+
+
   def training_step(self, batch, batch_idx):
     loss = self._step(batch)
     self.log('train_loss', loss, prog_bar=True)
@@ -124,7 +153,7 @@ class Prior(L.LightningModule):
 
   def configure_optimizers(self):
     optimizer = torch.optim.Adam(self.parameters(), lr=self._lr)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False, threshold=1e-6)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=25, verbose=False, threshold=1e-5)
 
     scheduler = {
       'scheduler': lr_scheduler,
