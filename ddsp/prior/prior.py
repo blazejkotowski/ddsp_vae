@@ -81,8 +81,8 @@ class Prior(L.LightningModule):
     Returns:
       - x: torch.Tensor[batch_size, seq_len, latent_size], the normalized latent codes
     """
-    min, max = self._normalization_dict['min'].min(), self._normalization_dict['max'].max()
-    return (x - min) / (max - min)
+    min_x, max_x = self._normalization_dict['min'], self._normalization_dict['max']
+    return -1 + 2 * (x - min_x) / (max_x - min_x)
     # return (x - self._normalization_dict['mean']) / self._normalization_dict['var']
 
 
@@ -95,8 +95,8 @@ class Prior(L.LightningModule):
     Returns:
       - x: torch.Tensor[batch_size, seq_len, latent_size], the denormalized latent codes
     """
-    min, max = self._normalization_dict['min'].min(), self._normalization_dict['max'].max()
-    return x * (max - min) + min
+    min_x, max_x = self._normalization_dict['min'], self._normalization_dict['max']
+    return ((x + 1) / 2) * (max_x - min_x) + min_x
     # return x * self._normalizatisleon_dict['var'] + self._normalization_dict['mean']
 
 
@@ -111,9 +111,40 @@ class Prior(L.LightningModule):
       - x: torch.Tensor[batch_size, seq_len, latent_size], the sampled latent codes
     """
     temperature += 1e-4
-    # probs = softmax(logits / temperature)
-    x = torch.distributions.Categorical(logits=logits/temperature).sample()
+    probs = softmax(logits / temperature)
+    # x = torch.distributions.Categorical(probs=probs).sample()
+    # x = torch.distributions.Categorical(logits=logits/temperature).sample()
+    x = torch.argmax(probs, dim=-1)
     return self.denormalize(self._dequantizer(x))
+
+
+  def generate(self, prime: torch.Tensor, seq_len: int, temperature: float = 0.0) -> torch.Tensor:
+    """
+    Arguments:
+      - prime: torch.Tensor[prime_len, latent_size], the preceding latent code sequence
+      - seq_len: int, the length of the generated sequence
+      - temperature: float, the temperature for sampling
+    Returns
+      - torch.Tensor[seq_len, latent_size], the generated latent code sequence
+    """
+    prime_len = prime.size(0)
+    # self.eval()
+    output_seq = torch.full((seq_len, self._latent_size), fill_value=0, device=self.device, dtype=torch.float32)
+
+    output_seq[:prime.shape[0], :] = prime.clone()
+    x = prime.clone().unsqueeze(0)
+
+    for i in range(prime_len, seq_len):
+      with torch.no_grad():
+        logits = self(x)
+        y_hat = self.sample(logits, temperature=temperature)
+      x = torch.cat((x, y_hat[:, -1:, :]), dim=1)
+      output_seq[i, :] = y_hat.squeeze()[-1, :]
+
+      if x.size(1) > self._max_len:
+        x = x[:, -prime_len:, :]
+
+    return output_seq
 
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -153,10 +184,7 @@ class Prior(L.LightningModule):
     #   causal_mask.fill_diagonal_(False)
 
     # encode using transformer encoder
-    if not self.eval_mode:
-      enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
-    else:
-      enc = self._encoder(pos) * math.sqrt(self._d_model)
+    enc = self._encoder(pos, mask=causal_mask) * math.sqrt(self._d_model)
 
     # permute back
     enc = enc.permute(1, 0, 2) # => [batch_size, seq_len, d_model]
@@ -165,7 +193,7 @@ class Prior(L.LightningModule):
     enc = self._activation(enc)
 
     # dropout
-    enc = self._dropout(enc) # => [batch_size, seq_len, d_model]
+    # enc = self._dropout(enc) # => [batch_size, seq_len, d_model]
 
     # project back to latent space
     fc = self._fc(enc) # [batch_size, seq_len, latent_size * quantization_channels]
