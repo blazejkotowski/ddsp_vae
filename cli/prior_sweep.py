@@ -26,7 +26,7 @@ training_path = os.path.join(training_path_root, model_name)
 synth_output_path = os.path.join(models_path_root, f'{model_name}.ts')
 
 # Fixed prior config
-prior_epochs = 100
+prior_epochs = 1000
 prior_model_name = f'{model_name}-prior'
 lr = 1e-3
 
@@ -75,14 +75,12 @@ def train_model():
     sampling_rate=fs,
     device='cuda',
     stride_factor=0.25,
-    dropout=config['dropout']
   )
 
   batch_size = config['batch_size']
-  # batch_size = 64
 
   generator = torch.Generator(device='cuda').manual_seed(42)
-  prior_train_set, prior_val_set = random_split(prior_dataset, [0.9, 0.1], generator=generator)
+  prior_train_set, prior_val_set = random_split(prior_dataset, [0.8, 0.2], generator=generator)
 
   prior_train_loader = DataLoader(prior_train_set, batch_size=batch_size, shuffle=True, generator=generator)
   prior_val_loader = DataLoader(prior_val_set, batch_size=batch_size, shuffle=False, generator=generator)
@@ -93,20 +91,20 @@ def train_model():
   prior = Prior(
     latent_size = latent_size,
     d_model = config['d_model'],
-    num_layers = 6,
+    num_layers = config['num_layers'],
     nhead = config['nhead'],
     max_len = config['sequence_length'],
     lr = 1e-3
   )
 
-  early_stopping = EarlyStopping(monitor='val_loss', patience=100, mode='min', min_delta=1e-6)
+  early_stopping = EarlyStopping(monitor='val_loss', patience=100, mode='min', min_delta=1e-4)
 
   prior_trainer = L.Trainer(
     callbacks=[early_stopping],
     accelerator='cuda',
     log_every_n_steps=4,
     logger=wandb_logger,
-    max_epochs=config['epochs'],
+    max_epochs=1500,
     check_val_every_n_epoch=1,
   )
 
@@ -123,22 +121,21 @@ if __name__ == '__main__':
 
   sweep_config = {
     'method': 'random',
-    'name': 'ddsp-prior-sweep-5',
+    'name': 'prior-2-latents',
     'metric': {
         'goal': 'minimize',
         'name': 'val_loss'
     },
     'parameters': {
-      'sequence_length': {'values': [64, 128]},
+      'sequence_length': {'values': [64, 128, 256]},
       'batch_size': {'values': [16, 64, 128]},
-      'd_model': {'values': [32, 64]},
-      # 'num_layers': {'values': [2, 3, 6]},
-      'nhead': {'values': [2, 4]},
-      'epochs': {'values': [25, 50, 75, 100]},
-      'dropout': {'values': [0, 0.1, 0.2, 0.5]}
-      # 'dataset_stride': {'values': [0.25, 0.5, 1]}
+      'd_model': {'values': [32, 64, 128]},
+      'num_layers': {'values': [2, 4, 6]},
+      'nhead': {'values': [2, 4, 8]},
+      # 'dropout': {'values': [0, 0.1, 0.2, 0.5]}
+      'dataset_stride': {'values': [0.25, 0.5, 1]}
     }
   }
 
   sweep_id=wandb.sweep(sweep_config, project="ddsp-prior")
-  wandb.agent(sweep_id=sweep_id, function=train_model, count=96)
+  wandb.agent(sweep_id=sweep_id, function=train_model, count=256)
