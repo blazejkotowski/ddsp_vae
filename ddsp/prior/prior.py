@@ -53,7 +53,7 @@ class Prior(L.LightningModule):
     self._positional_encoding = LearnablePositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout, device=self._device)
     # self._positional_encoding = FixedPositionalEncoding(d_model=d_model, max_len=max_len, dropout=dropout, device=self._device)
     self._activation = nn.ReLU()
-    # self._dropout = nn.Dropout(dropout)
+    self._dropout = nn.Dropout(dropout)
 
     self._out = nn.Linear(d_model, latent_size)
 
@@ -81,7 +81,7 @@ class Prior(L.LightningModule):
     pos = self._positional_encoding(u)
 
     # Construct causal mask
-    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0), device=self._device), diagonal=1).bool().to(pos.device)
+    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0), device=self._device), diagonal=1).to(torch.bool).to(pos.device)
 
     # if self.training:
     #   # Mask certain positions for better generalization (idea code from Behzad, cite if published)
@@ -103,7 +103,7 @@ class Prior(L.LightningModule):
     act = act.permute(1, 0, 2) # => [batch_size, seq_len, d_model]
 
     # dropout
-    # act = self._dropout(act) # => [batch_size, seq_len, d_model]
+    act = self._dropout(act) # => [batch_size, seq_len, d_model]
 
     # project back to latent space
     out = self._out(act) # => [batch_size, seq_len, latent_size]
