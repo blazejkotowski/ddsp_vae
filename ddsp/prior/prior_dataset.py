@@ -98,7 +98,9 @@ class PriorDataset(Dataset):
     for audio in audio_tensors:
       with torch.no_grad():
         mu, scale = self._encoder(audio.unsqueeze(0))
-        mu_scale = torch.cat([mu, scale], dim = -1).squeeze(0)
+        latents, _ = self._encoder.reparametrize(mu, scale)
+        latents = latents.squeeze(0)
+        # mu_scale = torch.cat([mu, scale], dim = -1).squeeze(0)
 
         # mu_scale = mu.squeeze(0) # try only mu
         # mu_scale = mu_scale[..., :1] # try only one (the first) latent variable
@@ -114,9 +116,9 @@ class PriorDataset(Dataset):
 
         # Stratified sampling with stride
         stride = int(self._sequence_length * self._stride_factor)
-        num_chunks = (mu_scale.size(0) - self._sequence_length) // stride + 1
+        num_chunks = (latents.size(0) - self._sequence_length) // stride + 1
         for i in range(num_chunks):
-          encodings.append(mu_scale[i*stride:i*stride+self._sequence_length])
+          encodings.append(latents[i*stride:i*stride+self._sequence_length])
 
     return encodings
 

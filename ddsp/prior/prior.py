@@ -111,10 +111,10 @@ class Prior(L.LightningModule):
       - x: torch.Tensor[batch_size, seq_len, latent_size], the sampled latent codes
     """
     temperature += 1e-4
-    probs = softmax(logits / temperature)
+    # probs = softmax(logits / temperature)
     # x = torch.distributions.Categorical(probs=probs).sample()
-    # x = torch.distributions.Categorical(logits=logits/temperature).sample()
-    x = torch.argmax(probs, dim=-1)
+    x = torch.distributions.Categorical(logits=logits/temperature).sample()
+    # x = torch.argmax(probs, dim=-1)
     return self.denormalize(self._dequantizer(x))
 
 
@@ -168,7 +168,7 @@ class Prior(L.LightningModule):
 
     # so far each latent variable was embedded separately
     # now we stack them together, preparing for the transformer
-    pos = pos.view(batch_size, seq_len, self._d_model) # => [seq_len, batch_size, d_model]
+    pos = pos.view(seq_len, batch_size, self._d_model) # => [seq_len, batch_size, d_model]
 
     # Construct causal mask
     causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0), device=self._device), diagonal=1).bool().to(pos.device)
@@ -223,7 +223,7 @@ class Prior(L.LightningModule):
   def configure_optimizers(self):
     optimizer = torch.optim.Adam(self.parameters(), lr=self._lr)
     # optimizer = torch.optim.SGD(self.parameters(), lr=self._lr, momentum=0.9)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=False, threshold=1e-3)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=200, verbose=False, threshold=1e-4)
 
     scheduler = {
       'scheduler': lr_scheduler,
