@@ -132,8 +132,6 @@ class PriorWrapper(torch.nn.Module):
     x = x[:1, ...] # only first in batch
     seq_len = x.shape[1]
 
-    print(f"appending {seq_len} latents to buffer.")
-
     if self.current_buffer_len + seq_len > self.max_len:
       self.prior_buffer[:, :self.init_primer_len-seq_len, :] = self.prior_buffer[:, -self.init_primer_len+seq_len:, :].clone()
       self.prior_buffer[:, self.init_primer_len:self.init_primer_len+seq_len, :] = x
@@ -174,7 +172,6 @@ class PriorWrapper(torch.nn.Module):
       output = output.repeat_interleave(x.size(0), dim=0)
 
     self.append_to_buffer(output)
-    print(f"Generated {output.shape[1]} latents.")
 
     return output.permute(0, 2, 1).float()
 
