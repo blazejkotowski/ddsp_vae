@@ -117,8 +117,8 @@ class PriorWrapper(torch.nn.Module):
     self.max_len = self.prior._max_len
     self.init_primer_len = self.max_len // 4
     self.current_buffer_len = self.init_primer_len
-      # self.register_attribute("prior_buffer_length", self.init_primer_length)
-    self.prior_buffer = torch.randn(1, self.max_len, self.prior._latent_size)
+    self.register_buffer("prior_buffer", torch.randn(1, self.max_len, self.prior._latent_size))
+    # self.prior_buffer = torch.randn(1, self.max_len, self.prior._latent_size)
 
 
   def append_to_buffer(self, x: torch.Tensor):
@@ -127,45 +127,56 @@ class PriorWrapper(torch.nn.Module):
     it is reset to the initial primer length.
 
     Args:
-      x, torch.Tensor[batch_size, latent_size, seq_len]
+      x, torch.Tensor[batch_size, seq_len, latent_size]
     """
-    x = x.permute(0, 2, 1) # => [batch_size, seq_len, latent_size]
-    incoming_seq_len = x.shape[1]
+    x = x[:1, ...] # only first in batch
+    seq_len = x.shape[1]
 
-    if incoming_seq_len + self.current_buffer_len > self.max_len:
-      print("resetting buffer")
-      self.prior_buffer[:, :self.init_primer_len-incoming_seq_len, :] = self.prior_buffer[:, -self.init_primer_len+incoming_seq_len:, :].clone()
-      self.prior_buffer[:, self.init_primer_len:self.init_primer_len+incoming_seq_len, :] = x
+    print(f"appending {seq_len} latents to buffer.")
+
+    if self.current_buffer_len + seq_len > self.max_len:
+      self.prior_buffer[:, :self.init_primer_len-seq_len, :] = self.prior_buffer[:, -self.init_primer_len+seq_len:, :].clone()
+      self.prior_buffer[:, self.init_primer_len:self.init_primer_len+seq_len, :] = x
       self.current_buffer_len = self.init_primer_len
     else:
-      self.prior_buffer[:, self.current_buffer_len:self.current_buffer_len+incoming_seq_len, :] = x[:1, ...]
-      self.current_buffer_len += incoming_seq_len
-    print("Buffer length: ", self.current_buffer_len)
-
+      self.prior_buffer[:, self.current_buffer_len:self.current_buffer_len+seq_len, :] = x
+      self.current_buffer_len += seq_len
+  
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     Args:
       x, torch.Tensor[batch_size, latent_size, seq_len]
     """
-    steps = x.shape[-1]
-    latents = torch.zeros(1, steps, self.prior._latent_size)
+    # self.append_to_buffer(x.permute(0, 2, 1))
 
-    self.append_to_buffer(x)
+    steps = x.shape[-1]
+
+    output = torch.zeros(1, steps, self.prior._latent_size)
+    local_buffer = self.prior_buffer.clone()
+    current_len = self.current_buffer_len
 
     for i in range(steps):
-      prime = self.prior_buffer[:, :self.current_buffer_len, :]
-
-      # Predict the next latent code
+      prime = local_buffer[:, :current_len, :]
       logits = self.prior(prime)
-      latents[:, i, :] = self.prior.sample(logits, temperature=1.0)[:, -1, :] # TODO: adjustable temperature
+      latent = self.prior.sample(logits, temperature=1.0)[:, -1:, :]
 
+      local_buffer[:, current_len:current_len+1, :] = latent
+      output[:, i, :] = latent[:, 0, :]
+
+      current_len += 1
+
+      if current_len >= self.max_len:
+        local_buffer[:, :self.init_primer_len, :] = local_buffer[:, -self.init_primer_len:, :].clone()
+        current_len = self.init_primer_len
+    
     if x.size(0) > 1:
-      latents = latents.repeat_interleave(x.size(0), dim=0)
+      output = output.repeat_interleave(x.size(0), dim=0)
 
-    return latents.permute(0, 2, 1).float() # [batch_size, latent_size, seq_len]
+    self.append_to_buffer(output)
+    print(f"Generated {output.shape[1]} latents.")
 
-
+    return output.permute(0, 2, 1).float()
 
 class ONNXDDSP(torch.nn.Module):
   def __init__(self,

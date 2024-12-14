@@ -320,6 +320,7 @@ class FixedPositionalEncoding(nn.Module):
     pe[:, 0::2] = torch.sin(position * div_term)
     pe[:, 1::2] = torch.cos(position * div_term)
     pe = scale_factor * pe.unsqueeze(0).transpose(0, 1)
+
     self.register_buffer('pe', pe)  # this stores the variable in the state_dict (used for non-trainable variables)
 
   def forward(self, x):
@@ -327,8 +328,8 @@ class FixedPositionalEncoding(nn.Module):
     Args:
         x: the sequence fed to the positional encoder model (required).
     Shape:
-        x: [sequence length, batch size, embed dim]
-        output: [sequence length, batch size, embed dim]
+        x: [sequence length, batch size, latent_size, embed dim]
+        output: [sequence length, batch size, latent_size, embed dim]
     """
-    x = x + self.pe[:x.size(1), :]
+    x = (x.permute(1, 0, 2, 3) + self.pe[:x.size(0), :]).permute(1, 0, 2, 3)
     return self.dropout(x)
