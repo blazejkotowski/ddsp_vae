@@ -82,6 +82,7 @@ class Prior(L.LightningModule):
       - x: torch.Tensor[batch_size, seq_len, latent_size], the normalized latent codes
     """
     min_x, max_x = self._normalization_dict['min'], self._normalization_dict['max']
+    x.clip_(min_x, max_x)
     return -1 + 2 * (x - min_x) / (max_x - min_x)
     # return (x - self._normalization_dict['mean']) / self._normalization_dict['var']
 
@@ -110,11 +111,16 @@ class Prior(L.LightningModule):
     Returns:
       - x: torch.Tensor[batch_size, seq_len, latent_size], the sampled latent codes
     """
-    temperature += 1e-4
-    # probs = softmax(logits / temperature)
-    # x = torch.distributions.Categorical(probs=probs).sample()
-    x = torch.distributions.Categorical(logits=logits/temperature).sample()
-    # x = torch.argmax(probs, dim=-1)
+    temperature = max(1e-4, temperature) # avoid <= 0 temperature values
+    logits /= temperature
+
+    # This is the same as using torch.distributions.Categorical(logits=logits).sample()
+    # but it is not supported by torchscript
+    probs = torch.nn.functional.softmax(logits, dim=-1)
+    b, s, l, q = logits.size()
+    flattened_probs = probs.view(-1, q)
+    x = torch.multinomial(flattened_probs, 1).view(b, s, l)
+
     return self.denormalize(self._dequantizer(x))
 
 
@@ -171,7 +177,7 @@ class Prior(L.LightningModule):
     pos = pos.view(seq_len, batch_size, self._d_model) # => [seq_len, batch_size, d_model]
 
     # Construct causal mask
-    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0), device=self._device), diagonal=1).bool().to(pos.device)
+    causal_mask = torch.triu(torch.ones(pos.size(0), pos.size(0), device=self._device), diagonal=1).to(dtype=torch.bool).to(pos.device)
 
     # if self.training:
     #   # Mask certain positions for better generalization (idea code from Behzad, cite if published)

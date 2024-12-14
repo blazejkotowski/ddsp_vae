@@ -4,19 +4,30 @@ import torch
 import lightning as L
 import cached_conv as cc
 
+import time
+
 from ddsp.utils import find_checkpoint
 
 from ddsp import DDSP
+from ddsp.prior import Prior
 
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
 
 class ScriptedDDSP(nn_tilde.Module):
   def __init__(self,
-               pretrained: DDSP):
+               pretrained: DDSP,
+               prior_model: Prior = None):
     super().__init__()
 
     self.pretrained = pretrained
+
+    if prior_model is None:
+      prior_model = FakePrior()
+    else:
+      prior_model = PriorWrapper(prior_model)
+
+    self.prior_model = prior_model
 
     # # # Calculate the input ratio
     # x_len = 2**14
@@ -24,6 +35,8 @@ class ScriptedDDSP(nn_tilde.Module):
     # y, _ = self.pretrained(x)
     # in_ratio = y.shape[-1] / x_len
     # print(f"in_ratio: {in_ratio}")
+
+    # self.register_buffer("prior_buffer", torch.randn(1, self.prior_model._max_len, self.prior_model._latent_size))
 
     self.register_method(
       "forward",
@@ -58,6 +71,15 @@ class ScriptedDDSP(nn_tilde.Module):
       test_method=True
     )
 
+    if not isinstance(self.prior_model, FakePrior):
+      self.register_method(
+        "prior",
+        in_channels=self.pretrained.latent_size,
+        in_ratio=self.pretrained.resampling_factor,
+        out_channels=self.pretrained.latent_size,
+        out_ratio=self.pretrained.resampling_factor,
+      )
+
   @torch.jit.export
   def decode(self, latents: torch.Tensor):
     synth_params = self.pretrained.decoder(latents.permute(0, 2, 1))
@@ -74,6 +96,75 @@ class ScriptedDDSP(nn_tilde.Module):
   @torch.jit.export
   def forward(self, audio: torch.Tensor):
     return self.pretrained(audio.squeeze(1)).float()
+
+  @torch.jit.export
+  def prior(self, x: torch.Tensor):
+    return self.prior_model(x)
+
+
+
+class FakePrior(torch.nn.Module):
+  def forward(self, x: torch.Tensor):
+    return torch.zeros_like(x)
+
+
+class PriorWrapper(torch.nn.Module):
+  def __init__(self, prior: Prior):
+    super().__init__()
+
+    self.prior = prior
+
+    self.max_len = self.prior._max_len
+    self.init_primer_len = self.max_len // 4
+    self.current_buffer_len = self.init_primer_len
+      # self.register_attribute("prior_buffer_length", self.init_primer_length)
+    self.prior_buffer = torch.randn(1, self.max_len, self.prior._latent_size)
+
+
+  def append_to_buffer(self, x: torch.Tensor):
+    """
+    Appends the input tensor to the prior buffer, if the buffer is full,
+    it is reset to the initial primer length.
+
+    Args:
+      x, torch.Tensor[batch_size, latent_size, seq_len]
+    """
+    x = x.permute(0, 2, 1) # => [batch_size, seq_len, latent_size]
+    incoming_seq_len = x.shape[1]
+
+    if incoming_seq_len + self.current_buffer_len > self.max_len:
+      print("resetting buffer")
+      self.prior_buffer[:, :self.init_primer_len-incoming_seq_len, :] = self.prior_buffer[:, -self.init_primer_len+incoming_seq_len:, :].clone()
+      self.prior_buffer[:, self.init_primer_len:self.init_primer_len+incoming_seq_len, :] = x
+      self.current_buffer_len = self.init_primer_len
+    else:
+      self.prior_buffer[:, self.current_buffer_len:self.current_buffer_len+incoming_seq_len, :] = x[:1, ...]
+      self.current_buffer_len += incoming_seq_len
+    print("Buffer length: ", self.current_buffer_len)
+
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Args:
+      x, torch.Tensor[batch_size, latent_size, seq_len]
+    """
+    steps = x.shape[-1]
+    latents = torch.zeros(1, steps, self.prior._latent_size)
+
+    self.append_to_buffer(x)
+
+    for i in range(steps):
+      prime = self.prior_buffer[:, :self.current_buffer_len, :]
+
+      # Predict the next latent code
+      logits = self.prior(prime)
+      latents[:, i, :] = self.prior.sample(logits, temperature=1.0)[:, -1, :] # TODO: adjustable temperature
+
+    if x.size(0) > 1:
+      latents = latents.repeat_interleave(x.size(0), dim=0)
+
+    return latents.permute(0, 2, 1).float() # [batch_size, latent_size, seq_len]
+
 
 
 class ONNXDDSP(torch.nn.Module):
@@ -101,6 +192,7 @@ class ONNXDDSP(torch.nn.Module):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--model_directory', type=str, help='Path to the model training')
+  parser.add_argument('--prior_directory', type=str, default=None, help='Path to the prior model training')
   parser.add_argument('--output_path', type=str, help='Directory to save the autoencoded audio')
   parser.add_argument('--streaming', type=bool, default=True, help='Whether to use streaming mode')
   parser.add_argument('--type', default='best', help='Type of model to export', choices=['best', 'last'])
@@ -115,6 +207,17 @@ if __name__ == '__main__':
   if format not in ['ts', 'onnx']:
     raise ValueError(f'Invalid format: {format}, supported formats are: ts, onnx')
 
+  prior = None
+  if config.prior_directory is not None:
+    prior_checkpoint_path = find_checkpoint(config.prior_directory, typ=config.type)
+    print("exporting prior model from checkpoint: ", prior_checkpoint_path)
+    prior = Prior.load_from_checkpoint(prior_checkpoint_path, strict=False).to('cpu')
+    prior.eval()
+    for k in prior._normalization_dict.keys():
+      prior._normalization_dict[k] = prior._normalization_dict[k].to('cpu')
+
+    prior._trainer = L.Trainer()
+
   ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=True, device='cpu').to('cpu')
   if format == 'onnx':
     ddsp.eval()
@@ -127,5 +230,9 @@ if __name__ == '__main__':
     ddsp._trainer = L.Trainer() # ugly workaround
     ddsp._recons_loss = None # for the torchscript
     ddsp.eval()
-    scripted = ScriptedDDSP(ddsp).to('cpu')
+
+
+    scripted = ScriptedDDSP(ddsp, prior).to('cpu')
     scripted.export_to_ts(config.output_path)
+
+    print("Model exported to: ", config.output_path)
