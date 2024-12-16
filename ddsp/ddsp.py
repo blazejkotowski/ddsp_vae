@@ -239,7 +239,7 @@ class DDSP(L.LightningModule):
     # return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
     optimizer = torch.optim.Adam(self.parameters(), lr=self._learning_rate)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=100, verbose=False, threshold=1e-5)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=50, verbose=False, threshold=1e-2)
 
     scheduler = {
       'scheduler': lr_scheduler,

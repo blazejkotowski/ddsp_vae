@@ -121,7 +121,11 @@ class Prior(L.LightningModule):
     flattened_probs = probs.view(-1, q)
     x = torch.multinomial(flattened_probs, 1).view(b, s, l)
 
-    return self.denormalize(self._dequantizer(x))
+    x = self.denormalize(self._dequantizer(x))
+
+    # dither
+    # x = x + torch.rand_like(x) * 2 / self._quantization_channels - 1 / self._quantization_channels
+    return x
 
 
   def generate(self, prime: torch.Tensor, seq_len: int, temperature: float = 0.0) -> torch.Tensor:

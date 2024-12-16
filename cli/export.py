@@ -74,10 +74,11 @@ class ScriptedDDSP(nn_tilde.Module):
     if not isinstance(self.prior_model, FakePrior):
       self.register_method(
         "prior",
-        in_channels=self.pretrained.latent_size,
+        in_channels=self.pretrained.latent_size + 2, # latent transposition + temperature + prediction_strength
         in_ratio=self.pretrained.resampling_factor,
         out_channels=self.pretrained.latent_size,
         out_ratio=self.pretrained.resampling_factor,
+        input_labels=[f'(signal) Transposition {i}' for i in range(1, self.pretrained.latent_size+1)] + ['(signal) Temperature', '(signal) Prediction strenght'],
       )
 
   @torch.jit.export
@@ -144,9 +145,14 @@ class PriorWrapper(torch.nn.Module):
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     Args:
-      x, torch.Tensor[batch_size, latent_size, seq_len]
+      x, torch.Tensor[batch_size, latent_size + 1, seq_len]
     """
     # self.append_to_buffer(x.permute(0, 2, 1))
+
+    # Ignore the batch dimension
+    transposition = x[:1, :-2, :]
+    temperature = x[:1, -2, :]
+    prediction_annealing = 1 - x[:1, -1, :] 
 
     steps = x.shape[-1]
 
@@ -157,7 +163,12 @@ class PriorWrapper(torch.nn.Module):
     for i in range(steps):
       prime = local_buffer[:, :current_len, :]
       logits = self.prior(prime)
-      latent = self.prior.sample(logits, temperature=1.0)[:, -1:, :]
+      latent = self.prior.sample(logits, temperature=temperature[0, i])[:, -1:, :]
+
+      # transpose
+      # print('latent', latent.shape, 'transpositions', transposition[:, :, i].shape)
+      latent *= prediction_annealing[:, i]
+      latent += transposition[:, :, i]
 
       local_buffer[:, current_len:current_len+1, :] = latent
       output[:, i, :] = latent[:, 0, :]

@@ -3,6 +3,7 @@ import torch
 import math
 import torchaudio
 import torch.nn.functional as F
+import numpy as np
 
 from ddsp.filterbank import FilterBank
 
@@ -104,31 +105,49 @@ class SineSynth(BaseSynth):
     self._fs = fs
     self._n_sines = n_sines
     self._resampling_factor = resampling_factor
-    self._phases = None
+    # self._phases = None
+    self.register_buffer('_phases', None)
     self._streaming = streaming
     self._device = device
 
-  def forward(self, frequencies: torch.Tensor, amplitudes: torch.Tensor):
+    # self._base_freqs = torch.linspace(40, self._fs / 2, self._n_sines, device=self._device)
+    # self._base_freqs = 
+    self.register_buffer('_base_freqs', self._bark_freqs(self._fs, self._n_sines, device=self._device))
+    # shift ranges are the maximum shift according to the difference between the base frequencies
+    shift_ranges = (self._base_freqs[1:] - self._base_freqs[:-1]) / 2
+    shift_ranges = torch.cat((shift_ranges, shift_ranges[-1].view(1)))
+    self.register_buffer('_shift_ranges', shift_ranges)
+    
+
+
+  def forward(self, shift_ratios: torch.Tensor, amplitudes: torch.Tensor):
     """
     Generates a mixture of sinewaves with the given frequencies and amplitudes per sample.
 
     Arguments:
-      - frequencies: torch.Tensor[batch_size, n_sines, n_samples], the frequencies of the sinewaves
+      - shift_ratios: torch.Tensor[batch_size, n_sines, n_samples], the shifts ratios of the sinewaves between -1 and 1
       - amplitudes: torch.Tensor[batch_size, n_sines, n_samples], the amplitudes of the sinewaves
     """
-    batch_size = frequencies.shape[0]
+    batch_size = shift_ratios.shape[0]
 
     general_amplitude = amplitudes[:, :1, :]
     amplitudes = amplitudes[:, 1:, :]
+    shift_ratios = (shift_ratios - 1)*2 # shift from [0, 2] to [-2, 2] range
 
     # We only need to initialise phases buffer if we are in streaming mode
     if self._streaming and (self._phases is None or self._phases.shape[0] != batch_size):
-      self._phases = torch.zeros(batch_size, self._n_sines, device=self._device)
+      # self._phases = torch.zeros(batch_size, self._n_sines, device=self._device)
+      self._phases = torch.zeros(batch_size, self._n_sines)
 
     # Upsample from the internal sampling rate to the target sampling rate
-    frequencies = F.interpolate(frequencies, scale_factor=float(self._resampling_factor), mode='linear')
+    shift_ratios = F.interpolate(shift_ratios, scale_factor=float(self._resampling_factor), mode='linear')
     amplitudes = F.interpolate(amplitudes, scale_factor=float(self._resampling_factor), mode='linear')
     general_amplitude = F.interpolate(general_amplitude, scale_factor=float(self._resampling_factor), mode='linear')
+
+    # Calculate the shifts from the ratios
+    shifts = shift_ratios * self._shift_ranges.view(1, -1, 1)
+    # Calculate the frequencies from the shifts
+    frequencies = self._base_freqs.view(1, -1, 1) + shifts
 
     # cancel the sines above nyquist frequency
     amplitudes *= (frequencies < self._fs / 2).float() + 1e-4
@@ -159,6 +178,16 @@ class SineSynth(BaseSynth):
     signal = torch.sum(amplitudes * torch.sin(phases), dim=1, keepdim=True)
     return signal
 
+
+  @torch.jit.ignore
+  @staticmethod
+  def _bark_freqs(fs, n_sines, device='cpu'):
+    # Use Bark scale to divide the range of frequencies
+    freqs = torch.linspace(40, fs / 2, n_sines, device=device)
+    bark = 6 * torch.arcsinh(freqs/600.)
+    scaled = 30 + bark / max(bark) * freqs
+    return scaled
+  
 
   def _test(self, batch_size: int = 1, n_changes: int = 5, duration: float = 0.5, audiofile: str = 'sinewaves.wav'):
     # Generate a test signal of randomised sine frequencies and amplitudes
