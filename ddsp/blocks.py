@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import cached_conv as cc
 import math
-from torchaudio.transforms import MFCC
+from torchaudio.transforms import MFCC, MelSpectrogram
 
 from typing import Tuple, List
 
@@ -84,6 +84,7 @@ class VariationalEncoder(nn.Module):
 
     self.resampling_factor = resampling_factor
     self.mfcc = MFCC(sample_rate = sample_rate, n_mfcc = n_mfcc)
+    # self.mfcc = MelSpectrogram(sample_rate, n_mels=n_mfcc)
 
     self.normalization = nn.LayerNorm(n_mfcc)
 
