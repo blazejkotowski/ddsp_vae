@@ -5,7 +5,7 @@ import numpy as np
 import auraloss
 
 from ddsp.blocks import VariationalEncoder, Decoder
-from ddsp.synths import SineSynth, NoiseBandSynth
+from ddsp.synths import NoiseBandSynth
 
 from typing import List, Tuple, Dict
 
@@ -16,7 +16,6 @@ class DDSP(L.LightningModule):
 
   Args:
     - n_filters: int, the number of filters in the filterbank
-    - n_sines: int, the number of sines to synthesise
     - latent_size: int, number of latent dimensions
     - fs : int, the sampling rate of the input signal
     - encoder_ratios: List[int], the capacity ratios for encoder layers
@@ -30,7 +29,6 @@ class DDSP(L.LightningModule):
   """
   def __init__(self,
                n_filters: int = 2048,
-               n_sines: int = 500,
                latent_size: int = 16,
                fs: int = 44100,
                encoder_ratios: List[int] = [8, 4, 2],
@@ -50,9 +48,6 @@ class DDSP(L.LightningModule):
 
     # Noisebands synthesiserg
     self._noisebands_synth = NoiseBandSynth(n_filters=n_filters, fs=fs, resampling_factor=self.resampling_factor)
-
-    # Sine synthesiser
-    self._sine_synth = SineSynth(n_sines=n_sines, fs=fs, resampling_factor=self.resampling_factor, streaming=streaming)
 
     # ELBO regularization params
     self._beta = 0
@@ -75,7 +70,6 @@ class DDSP(L.LightningModule):
       layer_sizes=(np.array(decoder_ratios)*capacity).tolist(),
       n_bands=n_filters,
       streaming=streaming,
-      n_sines=n_sines,
     )
 
     # Define the loss
@@ -210,19 +204,16 @@ class DDSP(L.LightningModule):
     return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
 
 
-  def _synthesize(self, noiseband_amps: torch.Tensor, sine_freqs: torch.Tensor, sine_amps: torch.Tensor) -> torch.Tensor:
+  def _synthesize(self, noiseband_amps: torch.Tensor) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
       - noiseband_amps: torch.Tensor[batch_size, n_bands, sig_length], the predicted amplitudes of the noise bands
-      - sine_freqs: torch.Tensor[batch_size, n_sines, sig_length], the predicted frequencies of the sines
-      - sine_amps: torch.Tensor[batch_size, n_sines, sig_length], the predicted amplitudes of the sines
     Returns:
       - signal: torch.Tensor[batch_size, sig_length], the synthesized signal
     """
-    sines = self._sine_synth(sine_freqs, sine_amps)
     noisebands = self._noisebands_synth(noiseband_amps)
-    return torch.sum(torch.hstack([noisebands, sines]), dim=1, keepdim=True)
+    return torch.sum(noisebands, dim=1, keepdim=True)
 
   def _reconstruction_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Computes the reconstruction loss"""
