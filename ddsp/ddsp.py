@@ -201,7 +201,16 @@ class DDSP(L.LightningModule):
 
   def configure_optimizers(self):
     """Configure the optimizer for the model"""
-    return torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+    optimizer = torch.optim.Adam(self.parameters(), lr=self._learning_rate)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=50, verbose=False, threshold=1e-2)
+
+    scheduler = {
+      'scheduler': lr_scheduler,
+      'monitor': 'val_loss',
+      'interval': 'epoch'
+    }
+
+    return [optimizer], [scheduler]
 
 
   def _synthesize(self, noiseband_amps: torch.Tensor) -> torch.Tensor:
