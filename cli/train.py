@@ -120,8 +120,13 @@ if __name__ == '__main__':
 
   # Try to find previously trained checkpoint
   ckpt_path = find_checkpoint(training_path, return_none=True) if not config.force_restart else None
-  if ckpt_path is not None:
-    print(f"Resuming from checkpoint: {ckpt_path}")
+  if config.force_restart:
+    print("Force restart set to True")
+  else:
+    if ckpt_path is not None:
+      print(f"Resuming from checkpoint: {ckpt_path}")
+    else:
+      print(f"Did not find any checkpoint at {training_path}.")
 
   # Start training
   trainer.fit(model=ddsp,
