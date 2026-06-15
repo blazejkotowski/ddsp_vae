@@ -324,6 +324,17 @@ def _train_discrete(cfg: DictConfig, control_space, synth_configs, in_memory: bo
     enable_version_counter=False,
   )
   callbacks = [ckpt_acc, ckpt_loss]
+  # Optional periodic checkpoints (for coherence-vs-training-step analysis).
+  _ckpt_every = int(os.environ.get('PRIOR_CKPT_EVERY', '0'))
+  if _ckpt_every > 0:
+    callbacks.append(ModelCheckpoint(
+      dirpath=os.path.join(output_dir, 'steps'),
+      filename='step{step}',
+      every_n_train_steps=_ckpt_every,
+      save_top_k=-1,
+      save_on_train_epoch_end=False,
+      enable_version_counter=False,
+    ))
   logger = TensorBoardLogger(save_dir=output_dir, name='logs')
 
   model = PriorDiscrete(
@@ -336,8 +347,15 @@ def _train_discrete(cfg: DictConfig, control_space, synth_configs, in_memory: bo
     dropout=float(cfg.prior.model.dropout),
     max_len=int(ds.seq_len),
     lr=float(cfg.prior.training.lr),
+    num_territories=int(getattr(ds, 'num_territories', 0)),
+    cond_dim=int(getattr(ds, 'cond_dim', 0)),
+    cfg_dropout=float(getattr(getattr(cfg.prior, 'discrete', {}), 'cfg_dropout', 0.0)),
+    cond_dropout=float(getattr(getattr(cfg.prior, 'discrete', {}), 'cond_dropout', 0.0)),
+    joint_codebooks=bool(getattr(getattr(cfg.prior, 'discrete', {}), 'joint_codebooks', False)),
     device=device,
   )
+  if int(getattr(ds, 'num_territories', 0)) > 0:
+    print(f"Territory conditioning enabled: {ds.num_territories} territories")
 
   force_restart = cfg.prior.training.get('force_restart', False)
   ckpt_path = None

@@ -355,6 +355,12 @@ def _create_tokens_cache_key(
     compressor_checkpoint_path: str,
     token_seq_len: int,
     stride_factor: float,
+    respect_boundaries: bool = True,
+    num_territories: int = 0,
+    cond_envelope: bool = False,
+    cond_smooth_frames: int = 64,
+    terr_rich: bool = False,
+    terr_by_track: bool = False,
 ) -> str:
     ckpt_sig = os.stat(ddsp_checkpoint_path)
     ddsp_sig = f"{ddsp_checkpoint_path}:{int(ckpt_sig.st_mtime)}:{int(ckpt_sig.st_size)}"
@@ -362,7 +368,7 @@ def _create_tokens_cache_key(
     field_sig = _control_space_signature(control_space)
     key_string = (
         f"{dataset_path}_{n_signal}_{sampling_rate}_{resampling_factor}_{n_channels}_"
-        f"tok{int(token_seq_len)}_{stride_factor}_{field_sig}_{ddsp_sig}_{comp_sig}"
+        f"tok{int(token_seq_len)}_{stride_factor}_bnd{int(bool(respect_boundaries))}_terr{int(num_territories)}_cond{int(bool(cond_envelope))}x{int(cond_smooth_frames)}_trich{int(bool(terr_rich))}_ttrack{int(bool(terr_by_track))}_{field_sig}_{ddsp_sig}_{comp_sig}"
     )
     return hashlib.md5(key_string.encode()).hexdigest()[:8]
 
@@ -376,6 +382,12 @@ def ensure_prior_tokens_lmdb(
     token_seq_len: int,
     stride_factor: float,
     device: Optional[str] = None,
+    respect_boundaries: bool = True,
+    num_territories: int = 0,
+    cond_envelope: bool = False,
+    cond_smooth_frames: int = 64,
+    terr_rich: bool = False,
+    terr_by_track: bool = False,
 ) -> dict[str, Any]:
     """Build token LMDB cache if missing.
 
@@ -445,28 +457,41 @@ def ensure_prior_tokens_lmdb(
     l_chunk = sr * 40
     # audio is [n_channels, T_total]; chunk along the time axis (last dim).
     T_total = int(audio.shape[-1])
-    n_chunks_audio = (T_total + l_chunk - 1) // l_chunk
 
-    commit_bytes = 256 * 1024**2
-    bytes_in_txn = 0
-    txn = env.begin(write=True)
-    try:
-        for i_chunk in range(int(n_chunks_audio)):
-            a = audio[:, i_chunk * l_chunk : (i_chunk + 1) * l_chunk]  # [n_channels, chunk_len]
-            f = features[i_chunk * l_chunk : (i_chunk + 1) * l_chunk]
+    # Determine segments to window over. With respect_boundaries we window each
+    # source file independently (no window ever straddles two unrelated tracks, and
+    # windows span the former 40 s sub-chunk seams within a file). Otherwise we fall
+    # back to a single concatenated segment.
+    file_lengths = audio_ds.file_lengths() if respect_boundaries else None
+    if file_lengths is not None and int(sum(file_lengths)) == T_total:
+        segments = []
+        off = 0
+        for L in file_lengths:
+            L = int(L)
+            if L > 0:
+                segments.append((off, off + L))
+            off += L
+        print(f"[tokens] respecting {len(segments)} file boundaries")
+    else:
+        if respect_boundaries:
+            print("[tokens] file boundaries unavailable; single-segment windowing")
+        segments = [(0, T_total)]
+
+    def _segment_controls(seg_a, seg_f):
+        """Encode a file segment to a continuous control sequence [T_ctl, D].
+        Audio is sub-chunked (<=40 s) only to bound encoder memory; the resulting
+        control frames are concatenated so the segment is continuous."""
+        ctrls = []
+        L = int(seg_a.shape[-1])
+        for c0 in range(0, L, l_chunk):
+            a = seg_a[:, c0:c0 + l_chunk]
+            f = seg_f[c0:c0 + l_chunk]
             if a.shape[-1] < rf:
                 continue
-
-            # Downsample features to control frames
             feat = f.t().unsqueeze(0)  # [1, F, Ta]
             feat = torch.nn.functional.interpolate(
-                feat,
-                scale_factor=1 / rf,
-                mode="linear",
-                align_corners=False,
+                feat, scale_factor=1 / rf, mode="linear", align_corners=False,
             ).squeeze(0).t()  # [T_ctl, F]
-
-            # Latents (if encoder exists). Encoder downmixes the [1, n_channels, T] input internally.
             if getattr(ddsp, "encoder", None) is not None:
                 mu, scale = encoder(a.unsqueeze(0))
                 if hasattr(encoder, "reparametrize"):
@@ -475,22 +500,29 @@ def ensure_prior_tokens_lmdb(
                     z, _ = ddsp.reparametrize(mu, scale)
                 else:
                     z = mu
-                z = ddsp._smooth_latents(z).squeeze(0)
-                z = z.to(feat.device)
+                z = ddsp._smooth_latents(z).squeeze(0).to(feat.device)
             else:
                 Dz = int(getattr(ddsp, "latent_size", 0))
-                if Dz > 0:
-                    z = torch.zeros(feat.size(0), Dz, device=feat.device, dtype=feat.dtype)
-                else:
-                    z = torch.empty((feat.size(0), 0), device=feat.device, dtype=feat.dtype)
-
-            # Align time dims: encoder downsampling may differ from the feature
-            # downsampling by ±1, especially on the trailing partial chunk.
+                z = (torch.zeros(feat.size(0), Dz, device=feat.device, dtype=feat.dtype)
+                     if Dz > 0 else torch.empty((feat.size(0), 0), device=feat.device, dtype=feat.dtype))
             T_ctl = min(feat.size(0), z.size(0))
-            feat = feat[:T_ctl]
-            z = z[:T_ctl]
+            ctrls.append(torch.cat([feat[:T_ctl], z[:T_ctl]], dim=-1))
+        if len(ctrls) == 0:
+            return None
+        return torch.cat(ctrls, dim=0)  # [T_ctl_seg, D]
 
-            controls = torch.cat([feat, z], dim=-1)  # [T_ctl, D]
+    commit_bytes = 256 * 1024**2
+    bytes_in_txn = 0
+    # Per-window descriptors for territory clustering (index aligns with the token idx).
+    descriptors = []
+    cond_dim = 0  # control dimension (captured from data when cond_envelope)
+    txn = env.begin(write=True)
+    window_track = []  # source segment/track index per window (for track-based territories)
+    try:
+        for seg_idx, (s0, s1) in enumerate(segments):
+            controls = _segment_controls(audio[:, s0:s1], features[s0:s1])
+            if controls is None:
+                continue
 
             with torch.no_grad():
                 tok = compressor.encode_codes(controls.unsqueeze(0)).squeeze(0)
@@ -502,10 +534,53 @@ def ensure_prior_tokens_lmdb(
             if n_windows <= 0:
                 continue
 
+            # Per-token slow control ENVELOPE (low-passed control, sampled at token rate):
+            # the conditioning the fine prior learns to follow (replaced by an LFO at inference).
+            cond_seg = None
+            if cond_envelope:
+                cond_dim = int(controls.size(1))
+                k = int(cond_smooth_frames)
+                xc = controls.t().unsqueeze(0)  # [1, D, T_ctl]
+                xc = torch.nn.functional.avg_pool1d(xc, kernel_size=k, stride=compression_ratio,
+                                                    padding=k // 2, count_include_pad=False)
+                cond_seg = xc.squeeze(0).t()  # [~T_low, D]
+                if cond_seg.size(0) < T_low:  # pad tail to align with tokens
+                    cond_seg = torch.cat([cond_seg, cond_seg[-1:].repeat(T_low - cond_seg.size(0), 1)], 0)
+                cond_seg = cond_seg[:T_low]
+
             for i in range(int(n_windows)):
                 win = tok[i * token_stride : i * token_stride + token_seq_len]
                 if win.size(0) != token_seq_len:
                     continue
+                if cond_envelope and cond_seg is not None:
+                    cwin = cond_seg[i * token_stride : i * token_stride + token_seq_len]
+                    cbuf = cwin.detach().to("cpu").contiguous().to(torch.float32).numpy().tobytes(order="C")
+                    while True:
+                        try:
+                            txn.put(f"cond:{idx:08d}".encode(), cbuf); break
+                        except lmdb.MapFullError:
+                            txn.abort(); env.set_mapsize(int(env.info()["map_size"] * 1.5)); txn = env.begin(write=True)
+                if num_territories > 0:
+                    c0 = i * token_stride * compression_ratio
+                    c1 = (i * token_stride + token_seq_len) * compression_ratio
+                    seg = controls[c0:c1]
+                    if terr_rich:
+                        # Rich, dynamics + rhythm aware descriptor for more distinct zones:
+                        # mean, std, mean |velocity|, range, and the loudness-channel rhythm
+                        # signature (normalised low-freq FFT magnitude = groove/tempo).
+                        mean = seg.mean(0); std = seg.std(0)
+                        dv = (seg[1:] - seg[:-1]).abs().mean(0) if seg.size(0) > 1 else torch.zeros_like(mean)
+                        rng = seg.amax(0) - seg.amin(0)
+                        loud = seg[:, 0] - seg[:, 0].mean()
+                        spec = torch.fft.rfft(loud).abs()
+                        nb = min(48, spec.size(0) - 1)
+                        rhythm = spec[1:1 + nb]
+                        rhythm = rhythm / (rhythm.sum() + 1e-8)
+                        desc = torch.cat([mean, std, dv, rng, rhythm])
+                    else:
+                        desc = torch.cat([seg.mean(0), seg.std(0)])
+                    descriptors.append(desc.detach().to("cpu"))
+                window_track.append(seg_idx)
                 key = f"tokens:{idx:08d}".encode()
                 buf = win.detach().to("cpu").contiguous().to(torch.int16).numpy().tobytes(order="C")
 
@@ -535,6 +610,45 @@ def ensure_prior_tokens_lmdb(
         env.close()
         raise RuntimeError("No token windows produced; check dataset length and token_seq_len.")
 
+    # Territory clustering: group windows into K zones by their control statistics
+    # (mean+std of the control vector over the window), so the prior can be conditioned
+    # on a selectable "territory" and develop within / move between zones.
+    num_terr = 0
+    if terr_by_track and len(window_track) > 1:
+        # Territories = source tracks: maximally distinct zones (one per song).
+        import numpy as np
+        labels = np.array(window_track, dtype=np.int64)
+        num_terr = int(labels.max()) + 1
+        counts = np.bincount(labels, minlength=num_terr).tolist()
+        print(f"[tokens] {num_terr} territories = source tracks, window counts: {counts}")
+        while True:
+            try:
+                with env.begin(write=True) as txn_t:
+                    for j, lab in enumerate(labels.tolist()):
+                        txn_t.put(f"terr:{j:08d}".encode(), np.int16(lab).tobytes())
+                break
+            except lmdb.MapFullError:
+                env.set_mapsize(int(env.info()["map_size"] * 1.5))
+    elif num_territories > 0 and len(descriptors) > 1:
+        import numpy as np
+        from sklearn.cluster import KMeans
+        X = torch.stack(descriptors).numpy().astype(np.float64)
+        X = (X - X.mean(0)) / (X.std(0) + 1e-8)
+        K = int(min(int(num_territories), X.shape[0]))
+        labels = KMeans(n_clusters=K, n_init=10, random_state=0).fit_predict(X)
+        num_terr = K
+        counts = np.bincount(labels, minlength=K).tolist()
+        print(f"[tokens] {K} territories, window counts: {counts}")
+        while True:
+            try:
+                with env.begin(write=True) as txn_t:
+                    for j, lab in enumerate(labels.tolist()):
+                        txn_t.put(f"terr:{j:08d}".encode(),
+                                  np.int16(lab).tobytes())
+                break
+            except lmdb.MapFullError:
+                env.set_mapsize(int(env.info()["map_size"] * 1.5))
+
     control_rate_hz = float(sr) / float(rf)
     steps_per_second = control_rate_hz / float(compression_ratio)
 
@@ -549,6 +663,10 @@ def ensure_prior_tokens_lmdb(
         "strides": strides,
         "control_rate_hz": float(control_rate_hz),
         "steps_per_second": float(steps_per_second),
+        "num_territories": int(num_terr),
+        "cond_envelope": bool(cond_envelope),
+        "cond_dim": int(cond_dim),
+        "cond_smooth_frames": int(cond_smooth_frames),
     }
 
     meta_buf = pickle.dumps(meta, protocol=pickle.HIGHEST_PROTOCOL)
@@ -597,6 +715,22 @@ def build_or_load_prior_tokens_cache_from_cfg(
     if getattr(cfg.prior, "discrete", None) is not None and getattr(cfg.prior.discrete, "dataset", None) is not None:
         stride_factor = float(getattr(cfg.prior.discrete.dataset, "stride_factor", stride_factor))
 
+    respect_boundaries = bool(getattr(cfg.prior.dataset, "respect_boundaries", True))
+    if getattr(cfg.prior, "discrete", None) is not None and getattr(cfg.prior.discrete, "dataset", None) is not None:
+        respect_boundaries = bool(getattr(cfg.prior.discrete.dataset, "respect_boundaries", respect_boundaries))
+
+    num_territories = 0
+    cond_envelope = False
+    cond_smooth_frames = 64
+    terr_rich = False
+    terr_by_track = False
+    if getattr(cfg.prior, "discrete", None) is not None:
+        num_territories = int(getattr(cfg.prior.discrete, "num_territories", 0) or 0)
+        cond_envelope = bool(getattr(cfg.prior.discrete, "cond_envelope", False))
+        cond_smooth_frames = int(getattr(cfg.prior.discrete, "cond_smooth_frames", 64))
+        terr_rich = bool(getattr(cfg.prior.discrete, "terr_rich", False))
+        terr_by_track = bool(getattr(cfg.prior.discrete, "terr_by_track", False))
+
     if compressor_ckpt is None and getattr(cfg.prior, "discrete", None) is not None:
         compressor_ckpt = getattr(cfg.prior.discrete, "compressor_ckpt", None)
     if compressor_ckpt is None:
@@ -614,6 +748,12 @@ def build_or_load_prior_tokens_cache_from_cfg(
         compressor_checkpoint_path=compressor_ckpt,
         token_seq_len=token_seq_len,
         stride_factor=stride_factor,
+        respect_boundaries=respect_boundaries,
+        num_territories=num_territories,
+        cond_envelope=cond_envelope,
+        cond_smooth_frames=cond_smooth_frames,
+        terr_rich=terr_rich,
+        terr_by_track=terr_by_track,
     )
     out_path = _default_tokens_cache_path(dataset_path, cache_key)
 
@@ -659,5 +799,11 @@ def build_or_load_prior_tokens_cache_from_cfg(
         token_seq_len=token_seq_len,
         stride_factor=stride_factor,
         device=dev,
+        respect_boundaries=respect_boundaries,
+        num_territories=num_territories,
+        cond_envelope=cond_envelope,
+        cond_smooth_frames=cond_smooth_frames,
+        terr_rich=terr_rich,
+        terr_by_track=terr_by_track,
     )
     return out_path, stats

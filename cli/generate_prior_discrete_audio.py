@@ -158,6 +158,54 @@ def _prime_tokens_from_wav(
 
 
 @torch.no_grad()
+def _make_lfo_primer_tokens(compressor, feature_dim, latent_size, control_rate, seconds, beat_hz, device):
+  """Build beat-synced LFO trajectories on each control channel, encode to tokens.
+  loudness = peaky kick at the beat; centroid = slow sine; latents = slower synced sines.
+  This is synthetic, controllable priming (no audio in)."""
+  T = int(seconds * control_rate)
+  D = int(feature_dim + latent_size)
+  t = torch.arange(T, device=device).float() / float(control_rate)
+  ph = 2.0 * math.pi * float(beat_hz) * t
+  chans = []
+  # Features: loudness as a peaky per-beat pulse, centroid as a half-beat sine.
+  if feature_dim >= 1:
+    chans.append(0.08 + 0.55 * ((1 + torch.sin(ph - math.pi / 2)) / 2) ** 3)  # kick on the beat
+  if feature_dim >= 2:
+    chans.append(0.55 + 0.20 * torch.sin(0.5 * ph))                          # brightness sway
+  for c in range(2, feature_dim):
+    chans.append(0.5 + 0.2 * torch.sin((c) * ph))
+  # Latents: slower, beat-synced sines at distinct rates/phases.
+  lat_rates = [0.5, 0.25, 1.0, 0.75]
+  for i in range(latent_size):
+    r = lat_rates[i % len(lat_rates)]
+    chans.append(0.0 + 0.5 * torch.sin(r * ph + i * math.pi / 3.0))
+  ctrl = torch.stack(chans, dim=-1)[:, :D].unsqueeze(0)  # [1, T, D]
+  tok = compressor.encode_codes(ctrl)
+  if tok.dim() == 2:
+    tok = tok.unsqueeze(-1)
+  return tok  # [1, T_low, N]
+
+
+def _make_lfo_cond_env(n_points, rate, feature_dim, latent_size, beat_hz, device):
+  """Beat-synced LFO control envelope at token rate, [1, n_points, D]. Same channel
+  shapes as the LFO primer, used as continuous conditioning (the user's control surface)."""
+  D = int(feature_dim + latent_size)
+  t = torch.arange(n_points, device=device).float() / float(rate)
+  ph = 2.0 * math.pi * float(beat_hz) * t
+  chans = []
+  if feature_dim >= 1:
+    chans.append(0.08 + 0.55 * ((1 + torch.sin(ph - math.pi / 2)) / 2) ** 3)
+  if feature_dim >= 2:
+    chans.append(0.55 + 0.20 * torch.sin(0.5 * ph))
+  for c in range(2, feature_dim):
+    chans.append(0.5 + 0.2 * torch.sin((c) * ph))
+  lat_rates = [0.5, 0.25, 1.0, 0.75]
+  for i in range(latent_size):
+    chans.append(0.0 + 0.5 * torch.sin(lat_rates[i % len(lat_rates)] * ph + i * math.pi / 3.0))
+  return torch.stack(chans, dim=-1)[:, :D].unsqueeze(0)  # [1, n_points, D]
+
+
+@torch.no_grad()
 def _sample_tokens(
   prior: PriorDiscrete,
   n_tokens: int,
@@ -166,6 +214,13 @@ def _sample_tokens(
   sampling: str,
   device: str,
   primer_tokens: Optional[torch.Tensor] = None,
+  territory: int = -1,
+  top_p: float = 1.0,
+  reset_every: int = 0,
+  persist_primer: bool = False,
+  cond_env: Optional[torch.Tensor] = None,
+  territory_vec_env: Optional[torch.Tensor] = None,
+  cfg_scale: float = 1.0,
 ) -> torch.Tensor:
   codebook_size = int(prior.codebook_size)
   num_codebooks = int(prior.num_codebooks)
@@ -194,18 +249,78 @@ def _sample_tokens(
     buf[:, 1:1 + L, :] = primer_tokens[:, :L, :].to(device)
     gen_start = 1 + L
 
+  tid = None
+  if territory is not None and territory >= 0 and getattr(prior, '_num_territories', 0) > 0:
+    tid = torch.tensor([int(territory)], dtype=torch.long, device=device)
+  # Classifier-free guidance: amplify the conditioned distribution away from the unconditioned
+  # (NULL-territory) one. Requires a prior trained with cfg_dropout (so the null row is learned).
+  cfg_on = (float(cfg_scale) != 1.0 and tid is not None
+            and getattr(prior, '_cfg_dropout', 0.0) > 0.0)
+  null_tid = (torch.tensor([int(getattr(prior, '_cfg_null', 0))], dtype=torch.long, device=device)
+              if cfg_on else None)
+
+  start_col = torch.full((1, 1, num_codebooks), int(start_id), dtype=torch.long, device=device)
+  anchor = gen_start  # index of the first token in the current (post-reset) phrase
+  # Persistent primer: keep START+primer pinned at the front of every context window so the
+  # prior is *continuously* conditioned on the (LFO) scaffold, not just seeded once.
+  persist_head = (1 + primer_len) if (persist_primer and primer_tokens is not None) else 0
+
   for t in range(gen_start, n_tokens + 1):
-    start = max(0, t - max_len)
-    ctx = buf[:, start:t, :]
-    logits = prior(ctx)  # [1, S, N, K]
+    if persist_head > 0:
+      head = buf[:, :persist_head, :]
+      tail_lo = max(persist_head, t - (max_len - persist_head))
+      ctx = torch.cat([head, buf[:, tail_lo:t, :]], dim=1)[:, -max_len:, :]
+      logits = prior(ctx, territory_id=tid)
+      next_logits = logits[:, -1, :, :]
+      temp = max(1e-4, float(temperature))
+      probs = torch.softmax(next_logits / temp, dim=-1)
+      buf[:, t, :] = torch.multinomial(probs.reshape(-1, codebook_size), 1).reshape(1, num_codebooks)
+      continue
+    cond_slice = None
+    if reset_every > 0:
+      if t - anchor >= reset_every:
+        anchor = t  # start a fresh phrase: drop drifted history, re-anchor to START
+      # context = START + tokens since the anchor (in-distribution "phrase start"), capped to max_len
+      ctx = torch.cat([start_col, buf[:, anchor:t, :]], dim=1)[:, -max_len:, :]
+    else:
+      lo = max(0, t - max_len)
+      ctx = buf[:, lo:t, :]
+      if cond_env is not None:
+        cond_slice = cond_env[:, lo:t, :]
+    tvec = None
+    if territory_vec_env is not None:
+      tvec = territory_vec_env[:, min(t - 1, territory_vec_env.shape[1] - 1), :]  # [1, D] blend at this step
+    # Joint codebook head: decode the N codebooks autoregressively from the time-context (on-manifold).
+    if getattr(prior, 'is_joint', False):
+      h = prior.time_context(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec)[:, -1, :]  # [1, D]
+      hu = None
+      if cfg_on:
+        hu = prior.time_context(ctx, territory_id=null_tid, cond=cond_slice)[:, -1, :]
+      buf[:, t, :] = prior.depth_decode_last(h, temperature=float(temperature), top_p=float(top_p),
+                                             h_last_uncond=hu, cfg_scale=float(cfg_scale))
+      continue
+
+    logits = prior(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec)  # [1, S, N, K]
     next_logits = logits[:, -1, :, :]  # [1, N, K]
+    if cfg_on:
+      ul = prior(ctx, territory_id=null_tid, cond=cond_slice)[:, -1, :, :]  # uncond [1, N, K]
+      next_logits = ul + float(cfg_scale) * (next_logits - ul)
 
     if sampling == 'argmax':
       buf[:, t, :] = torch.argmax(next_logits, dim=-1)
       continue
 
     temp = max(1e-4, float(temperature))
-    probs = torch.softmax(next_logits / temp, dim=-1)
+    probs = torch.softmax(next_logits / temp, dim=-1)  # [1, N, K]
+    if top_p < 1.0:
+      # Nucleus filter per codebook: keep the smallest set of tokens whose cumulative
+      # probability >= top_p, renormalise, sample from those (anti-drift on-manifold).
+      sp, si = torch.sort(probs, dim=-1, descending=True)
+      csum = sp.cumsum(dim=-1)
+      keep = csum - sp <= top_p  # always keeps the top-1
+      sp = sp * keep
+      sp = sp / sp.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+      probs = torch.zeros_like(probs).scatter_(-1, si, sp)
     samp = torch.multinomial(probs.reshape(-1, codebook_size), 1).reshape(1, num_codebooks)
     buf[:, t, :] = samp
 
@@ -224,6 +339,18 @@ def main():
   ap.add_argument('--seconds', type=float, default=30.0, help='How many seconds to generate (approx).')
   ap.add_argument('--seed', type=int, default=0, help='Random seed for sampling.')
   ap.add_argument('--temperature', type=float, default=1.0, help='Sampling temperature (used for multinomial sampling).')
+  ap.add_argument('--territory', type=int, default=-1, help='Territory/zone to condition on (-1 = unconditioned; requires a territory-trained prior).')
+  ap.add_argument('--top_p', type=float, default=1.0, help='Nucleus sampling threshold per codebook (1.0 = off).')
+  ap.add_argument('--reset_every', type=int, default=0, help='Re-anchor context to START every N tokens (0 = off) to prevent progressive drift.')
+  ap.add_argument('--prime_lfo', action='store_true', help='Prime with synthetic beat-synced LFO control trajectories (no audio in).')
+  ap.add_argument('--lfo_beat_hz', type=float, default=2.0, help='LFO beat rate in Hz (2.0 = 120 bpm).')
+  ap.add_argument('--persist_primer', action='store_true', help='Keep the primer pinned at the front of every context (continuous scaffold).')
+  ap.add_argument('--cond_lfo', action='store_true', help='Drive a cond-trained prior with a beat-synced LFO control envelope.')
+  ap.add_argument('--cond_lfo_beat_hz', type=float, default=2.0, help='LFO beat rate for envelope conditioning.')
+  ap.add_argument('--lfo_amount', type=float, default=1.0, help='Scale the LFO envelope (1=full, 0=freeform; needs a cond_dropout-trained model for clean 0).')
+  ap.add_argument('--territory_a', type=int, default=-1, help='Interpolation start territory (with --territory_b).')
+  ap.add_argument('--territory_b', type=int, default=-1, help='Interpolation end territory; output morphs A->B over the clip.')
+  ap.add_argument('--cfg_scale', type=float, default=1.0, help='Classifier-free guidance scale (1.0 = off; >1 amplifies territory faithfulness; needs a cfg_dropout-trained prior).')
   ap.add_argument('--sampling', type=str, default='multinomial', choices=['multinomial', 'argmax'],
                   help="Sampling strategy: 'multinomial' (stochastic) or 'argmax' (greedy).")
   ap.add_argument('--primer_frac', type=float, default=0.25, help='Primer length as a fraction of prior max_len.')
@@ -293,7 +420,17 @@ def main():
   print('n_tokens:', n_tokens, 'prior_max_len:', max_len, 'primer_len:', primer_len)
 
   primer_tokens = None
-  if args.prime_wav:
+  if args.prime_lfo:
+    print('priming from synthetic LFO trajectories, beat_hz:', args.lfo_beat_hz)
+    primer_tokens = _make_lfo_primer_tokens(
+      compressor=compressor, feature_dim=feature_dim, latent_size=latent_size,
+      control_rate=control_rate, seconds=float(args.prime_seconds),
+      beat_hz=float(args.lfo_beat_hz), device=device,
+    )
+    print('lfo prime_tokens_len:', int(primer_tokens.shape[1]))
+    if primer_tokens.shape[1] < primer_len:
+      primer_len = int(primer_tokens.shape[1])
+  elif args.prime_wav:
     print('priming from wav:', args.prime_wav)
     primer_tokens = _prime_tokens_from_wav(
       ddsp=ddsp,
@@ -312,6 +449,24 @@ def main():
       primer_len = int(primer_tokens.shape[1])
 
   print('sampling tokens...')
+  cond_env = None
+  if args.cond_lfo and int(getattr(prior, '_cond_dim', 0)) > 0:
+    cond_env = _make_lfo_cond_env(n_tokens + 1, tokens_per_sec, feature_dim, latent_size,
+                                  float(args.cond_lfo_beat_hz), device)
+    # LFO amount: scale the envelope. 1.0 = full LFO; 0.0 = zeros = in-distribution freeform
+    # (for a cond_dropout-trained "switch" model). cond_proj(0)=bias is still applied (not None).
+    cond_env = cond_env * float(args.lfo_amount)
+    print('cond LFO envelope:', tuple(cond_env.shape), 'beat_hz', args.cond_lfo_beat_hz, 'amount', args.lfo_amount)
+
+  # Territory interpolation: morph the territory embedding A->B linearly across the clip.
+  territory_vec_env = None
+  tbl = prior.territory_embedding_table() if hasattr(prior, 'territory_embedding_table') else None
+  if args.territory_a >= 0 and args.territory_b >= 0 and tbl is not None:
+    a = tbl[int(args.territory_a)]; b = tbl[int(args.territory_b)]  # [D]
+    alpha = torch.linspace(0, 1, n_tokens + 1, device=device).unsqueeze(-1)  # [T,1]
+    territory_vec_env = ((1 - alpha) * a + alpha * b).unsqueeze(0)  # [1, T, D]
+    print(f'territory morph {args.territory_a}->{args.territory_b} over {n_tokens} tokens')
+
   tokens = _sample_tokens(
     prior,
     n_tokens=n_tokens,
@@ -320,6 +475,13 @@ def main():
     sampling=args.sampling,
     device=device,
     primer_tokens=primer_tokens,
+    territory=int(args.territory),
+    top_p=float(args.top_p),
+    reset_every=int(args.reset_every),
+    persist_primer=bool(args.persist_primer),
+    cond_env=cond_env,
+    territory_vec_env=territory_vec_env,
+    cfg_scale=float(args.cfg_scale),
   )
 
   # Diagnostic: fraction of unique tokens (low -> collapsed / "loopy").

@@ -261,9 +261,14 @@ class Decoder(nn.Module):
     # Pass through the output layer -> [batch_size, n_signal, n_channels * n_params]
     output = _scaled_sigmoid(self.output_params(x))
 
-    # Upsample back to original temporal resolution
+    # Upsample back to original temporal resolution. LINEAR interpolation (not zero-order-hold):
+    # ZOH holds each GRU output for `temporal_stride` frames, producing a hard param staircase at
+    # fs/(rf*stride) (~94 Hz) that the synth renders as clicks on percussive material. Linear interp
+    # turns the staircase into smooth ramps -> no per-stride discontinuity.
     if self.temporal_stride > 1:
-       output = output.repeat_interleave(self.temporal_stride, dim=1)[:, :T, :]
+       out_t = output.permute(0, 2, 1)  # [B, C, n_sub]
+       out_t = F.interpolate(out_t, size=T, mode='linear', align_corners=False)
+       output = out_t.permute(0, 2, 1)  # [B, T, C]
 
     # Expose the channel axis -> [batch_size, n_channels, n_params, n_signal]
     batch_size, n_signal = output.shape[0], output.shape[1]

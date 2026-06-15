@@ -34,12 +34,16 @@ class AudioFeatureDataset(Dataset):
       - device: str, the device to use
     """
     self._device = device
+    self._dataset_path = dataset_path
     self._n_signal = n_signal
     self._sampling_rate = sampling_rate
     self._resampling_factor = resampling_factor
     self._transform_fn = transform_fn
     self._control_space = control_space
     self._n_channels = n_channels
+    # Per-file sample lengths of the concatenated audio (for boundary-respecting
+    # windowing in the prior token cache). Populated on load; persisted in the cache.
+    self._file_lengths = None
 
     # Build feature extractors from control space (feature fields only)
     self._extractor_specs: List[tuple[str, object, dict]] = []
@@ -131,6 +135,7 @@ class AudioFeatureDataset(Dataset):
         "feat_dim": F,
         "chunk_samps": chunk_samps,
         "dtype": "float32",
+        "file_lengths": self._file_lengths,
       }
       print(f"Saving metadata: {metadata}")
       txn.put(b"metadata", pickle.dumps(metadata, protocol=pickle.HIGHEST_PROTOCOL))
@@ -174,6 +179,7 @@ class AudioFeatureDataset(Dataset):
       n_channels = int(meta.get("n_channels", 1))
       cs = int(meta["chunk_samps"])
       dtype = np.float32
+      self._file_lengths = meta.get("file_lengths", None)
 
       n_chunks = math.ceil(N / cs)
       audio_cpu = torch.empty((n_channels, N), dtype=torch.float32)
@@ -263,10 +269,38 @@ class AudioFeatureDataset(Dataset):
       raise RuntimeError(f"No audio files found in path: {path}")
 
     audio = torch.zeros((self._n_channels, 0), device=self._device)
+    file_lengths = []
     for filepath in filepaths:
       x = self._load_file(filepath)  # [n_channels, T]
+      file_lengths.append(int(x.shape[-1]))
       audio = torch.concat([audio, torch.from_numpy(x).to(self._device)], dim=-1)
+    self._file_lengths = file_lengths
     return audio
+
+  def file_lengths(self):
+    """Per-file sample lengths of the concatenated audio (sums to total samples).
+    Falls back to reconstructing from file headers (for older audio caches that
+    predate this metadata), rescaled to the dataset sampling rate and adjusted so
+    the lengths sum exactly to the loaded total."""
+    if self._file_lengths is not None:
+      return self._file_lengths
+    try:
+      import soundfile as sf
+      filepaths = glob(os.path.join(self._dataset_path, '**', '*.wav'), recursive=True)
+      if len(filepaths) == 0:
+        return None
+      lens = []
+      for fp in filepaths:
+        info = sf.info(fp)
+        lens.append(int(round(info.frames * float(self._sampling_rate) / float(info.samplerate))))
+      total = int(self._audio.shape[-1])
+      drift = total - sum(lens)
+      if lens:
+        lens[-1] += drift  # absorb rounding drift into the last file
+      self._file_lengths = lens
+      return lens
+    except Exception:
+      return None
 
 
   def _load_file(self, path: str):

@@ -147,9 +147,17 @@ class PriorTokenSequenceDataset(Dataset):
         self.seq_len = int(meta["seq_len"])
         self._num_codebooks = int(meta["num_codebooks"])
         self._codebook_size = int(meta["codebook_size"])
+        self._num_territories = int(meta.get("num_territories", 0) or 0)
+        self._territories = None  # [num_sequences] long, when territories are present
+        self._cond_envelope = bool(meta.get("cond_envelope", False))
+        self._cond_dim = int(meta.get("cond_dim", 0) or 0)
+        self._conditions = None  # [num_sequences, seq_len, cond_dim] float, when cond_envelope
 
         if self.in_memory:
             data = torch.empty((self.num_sequences, self.seq_len, self._num_codebooks), dtype=torch.int16)
+            terr = torch.zeros(self.num_sequences, dtype=torch.long) if self._num_territories > 0 else None
+            cond = (torch.zeros(self.num_sequences, self.seq_len, self._cond_dim, dtype=torch.float32)
+                    if self._cond_envelope and self._cond_dim > 0 else None)
             with env.begin() as txn:
                 for i in range(self.num_sequences):
                     buf = txn.get(f"tokens:{i:08d}".encode())
@@ -157,9 +165,23 @@ class PriorTokenSequenceDataset(Dataset):
                         raise RuntimeError(f"Missing key tokens:{i:08d} in {self.path}")
                     arr = torch.frombuffer(buf, dtype=self._dtype)
                     data[i] = arr.view(self.seq_len, self._num_codebooks).to(torch.int16)
+                    if terr is not None:
+                        tb = txn.get(f"terr:{i:08d}".encode())
+                        if tb is not None:
+                            terr[i] = int(torch.frombuffer(tb, dtype=torch.int16)[0])
+                    if cond is not None:
+                        cb = txn.get(f"cond:{i:08d}".encode())
+                        if cb is not None:
+                            cond[i] = torch.frombuffer(bytearray(cb), dtype=torch.float32).view(self.seq_len, self._cond_dim)
             self._data = data
+            self._territories = terr
+            self._conditions = cond
             try:
                 self._data.share_memory_()
+                if self._territories is not None:
+                    self._territories.share_memory_()
+                if self._conditions is not None:
+                    self._conditions.share_memory_()
             except RuntimeError:
                 pass
             env.close()
@@ -191,12 +213,29 @@ class PriorTokenSequenceDataset(Dataset):
     def codebook_size(self) -> int:
         return int(self._codebook_size)
 
+    @property
+    def num_territories(self) -> int:
+        return int(self._num_territories)
+
+    @property
+    def cond_dim(self) -> int:
+        return int(self._cond_dim) if self._cond_envelope else 0
+
     def __len__(self):
         return self.num_sequences
 
     def __getitem__(self, idx):
         if self._data is not None:
-            return self._data[idx].to(torch.long)
+            tok = self._data[idx].to(torch.long)
+            c = self._conditions is not None
+            t = self._territories is not None
+            if c and t:
+                return tok, self._conditions[idx], int(self._territories[idx])
+            if c:
+                return tok, self._conditions[idx]
+            if t:
+                return tok, int(self._territories[idx])
+            return tok
         if self._meta is not None:
             if self._env is None:
                 self._env = lmdb.open(self.path, readonly=True, lock=False, readahead=True, subdir=True)
@@ -204,7 +243,22 @@ class PriorTokenSequenceDataset(Dataset):
                 buf = txn.get(f"tokens:{idx:08d}".encode())
                 if buf is None:
                     raise IndexError(idx)
-                x = torch.frombuffer(buf, dtype=self._dtype).view(self.seq_len, self._num_codebooks)
-            return x.to(torch.long)
+                x = torch.frombuffer(buf, dtype=self._dtype).view(self.seq_len, self._num_codebooks).to(torch.long)
+                cond = None
+                if self._cond_envelope and self._cond_dim > 0:
+                    cb = txn.get(f"cond:{idx:08d}".encode())
+                    if cb is not None:
+                        cond = torch.frombuffer(bytearray(cb), dtype=torch.float32).view(self.seq_len, self._cond_dim)
+                terr = None
+                if self._num_territories > 0:
+                    tb = txn.get(f"terr:{idx:08d}".encode())
+                    terr = int(torch.frombuffer(tb, dtype=torch.int16)[0]) if tb is not None else 0
+            if cond is not None and terr is not None:
+                return x, cond, terr
+            if cond is not None:
+                return x, cond
+            if terr is not None:
+                return x, terr
+            return x
 
         raise RuntimeError("PriorTokenSequenceDataset internal state invalid")

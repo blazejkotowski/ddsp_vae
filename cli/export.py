@@ -17,6 +17,7 @@ from ddsp import DDSP
 from ddsp.interfaces import ControlField, ControlSpace
 import torch
 from ddsp.prior import Prior, PriorDiscrete
+from ddsp.prior.kv_infer import KVCachedPrior
 from ddsp.latent_compressor import LatentCompressor
 
 torch.enable_grad(False)
@@ -109,14 +110,39 @@ class ScriptedDDSP(nn_tilde.Module):
       )
 
     if not isinstance(self.prior_model, FakePrior):
-      self.register_method(
-        "prior",
-        in_channels=total_params + 2, # latent transposition + temperature + prediction_strength
-        in_ratio=self._nn_decode_ratio,
-        out_channels=total_params,
-        out_ratio=self.pretrained.resampling_factor,
-        input_labels=[f'(signal) Transposition {i}' for i in range(1, total_params+1)] + ['(signal) Temperature', '(signal) Prediction strenght'],
-      )
+      if isinstance(self.prior_model, PriorDiscreteWrapper):
+        # New layout: [LFO control envelope | normalised 2-D territory map | temperature].
+        cd = int(self.prior_model.cond_dim)
+        use_terr = bool(self.prior_model.use_terr_map)
+        use_cfg = bool(self.prior_model.use_cfg)
+        in_ch = int(self.prior_model.prior_in_channels)
+        labels = [f'(signal) LFO {i}' for i in range(1, cd + 1)]
+        if use_terr:
+          labels += ['(signal) Territory X', '(signal) Territory Y']
+        labels += ['(signal) Temperature']
+        if use_cfg:
+          labels += ['(signal) CFG Strength']
+        if bool(self.prior_model.use_feat_smooth):
+          labels += ['(signal) Smoothing']
+        if bool(self.prior_model.use_reseed):
+          labels += ['(signal) Reseed Trigger']
+        self.register_method(
+          "prior",
+          in_channels=in_ch,
+          in_ratio=self._nn_decode_ratio,
+          out_channels=total_params,
+          out_ratio=self.pretrained.resampling_factor,
+          input_labels=labels,
+        )
+      else:
+        self.register_method(
+          "prior",
+          in_channels=total_params + 2, # latent transposition + temperature + prediction_strength
+          in_ratio=self._nn_decode_ratio,
+          out_channels=total_params,
+          out_ratio=self.pretrained.resampling_factor,
+          input_labels=[f'(signal) Transposition {i}' for i in range(1, total_params+1)] + ['(signal) Temperature', '(signal) Prediction strenght'],
+        )
 
   @torch.jit.export
   def decode(self, params: torch.Tensor):
@@ -327,113 +353,261 @@ class LatentCompressorDecodeOnly(torch.nn.Module):
 
 
 class PriorDiscreteWrapper(torch.nn.Module):
-  def __init__(self, prior: PriorDiscrete, compressor: torch.nn.Module, resample_ratio: float = 1.0):
+  """Realtime nn~ wrapper for the (joint-codebook) discrete prior.
+
+  Control layout in `forward(x)` (x: [B, C, steps], C = cond_dim + 2 + 1 + use_cfg):
+    [0 : cond_dim)          -> LFO control envelope (the slow conditioning scaffold)
+    [cond_dim : cond_dim+2) -> normalised 2-D "territory map" coordinate (blends zones)
+    [cond_dim+2]            -> temperature (sampling randomness)
+    [cond_dim+3]            -> CFG scale (territory contrast/strength; 1=off, >1 amplifies) [if available]
+    [..]                    -> Smoothing (one-pole LPF on ALL control trajectories; 0=off..0.95 sluggish)
+    [last]                  -> Reseed Trigger (rising edge >0.5 re-anchors the prior to a fresh phrase)
+  No transposition, no prediction-strength. Joint (WS4) models sample the N codebooks
+  autoregressively per frame (on-manifold); independent models fall back to per-codebook sampling.
+  CFG runs a second (null-territory) KV cache in lockstep and guides each codebook's logits.
+  """
+  def __init__(self, prior: PriorDiscrete, compressor: torch.nn.Module, resample_ratio: float = 1.0,
+               n_feature_channels: int = 2, terr_map_temp: float = 0.5, decode_lookahead: int = 2):
     super().__init__()
 
-    self.prior = prior
+    # KV-cached incremental prior (weights mapped from the trained PriorDiscrete).
+    self.kv = KVCachedPrior(prior)
+    # Optional causal one-pole low-pass on the FEATURE output channels (loudness/centroid), to tame
+    # fast generated-feature transients that the synth renders as clicks (percussive material).
+    # Coefficient in [0,1): 0 = off; higher = smoother. Live-settable via set_feature_smoothing.
+    self.n_feat_smooth = int(n_feature_channels)
     self.compressor = compressor
     self.resample_ratio = resample_ratio
 
-    self.max_len = int(self.prior._max_len)
+    self.max_len = int(prior._max_len)
     self.init_primer_len = int(self.max_len // 4)
-    self.num_codebooks = int(self.prior.num_codebooks)
-    self.codebook_size = int(self.prior.codebook_size)
-    # START token id (prior-only; must never be fed to the compressor's VQ).
-    self.start_id = int(getattr(self.prior, 'start_token_id', self.codebook_size))
+    self.num_codebooks = int(prior.num_codebooks)
+    self.codebook_size = int(prior.codebook_size)
+    self.start_id = int(getattr(prior, 'start_token_id', self.codebook_size))
     self.compression_ratio = int(getattr(self.compressor, 'compression_ratio', 32))
 
-    # Infer control dimension via a dummy decode.
+    self.is_joint = bool(getattr(prior, '_joint', False))
+    self.cond_dim = int(getattr(prior, '_cond_dim', 0))
+    self.use_cond = self.cond_dim > 0
+    self.num_territories = int(getattr(prior, '_num_territories', 0))
+    self.use_terr_map = self.num_territories > 0
+    self.d_model = int(prior._d_model)
+    # Classifier-free guidance is available when the model is joint AND was trained with a learned
+    # NULL/uncond territory row (cfg_dropout > 0, so territory_weight has num_territories+1 rows).
+    self.use_cfg = bool(self.is_joint and self.use_terr_map
+                        and int(self.kv.territory_weight.shape[0]) > self.num_territories)
+    # nn~ inputs: [LFO(cond_dim) | TerritoryX,Y | Temperature | (CFG) | Smoothing | Reseed].
+    self.use_feat_smooth = int(n_feature_channels) > 0
+    self.use_reseed = True  # beat-synced phrase re-anchor (rising-edge trigger)
+    self.prior_in_channels = ((self.cond_dim if self.use_cond else 0)
+                              + (2 if self.use_terr_map else 0) + 1 + (1 if self.use_cfg else 0)
+                              + (1 if self.use_feat_smooth else 0) + (1 if self.use_reseed else 0))
+    self.terr_map_temp = float(terr_map_temp)  # blend sharpness of the 2-D territory map
+
     with torch.no_grad():
       _dummy = torch.zeros(1, 1, self.num_codebooks, dtype=torch.long)
       _num_controls = int(compressor.decode_codes(_dummy).shape[2])
+    self.num_controls = _num_controls
 
-    # Cold start from the learned START token at position 0, length 1.
+    # 2-D territory map: PCA of the learned territory embeddings (first num_territories rows;
+    # the CFG null row is excluded) -> a 2-D coordinate per zone the user can navigate/blend.
+    if self.use_terr_map:
+      W = self.kv.territory_weight[:self.num_territories].float()        # [T, D]
+      Wc = W - W.mean(0, keepdim=True)
+      try:
+        _, _, V = torch.pca_lowrank(Wc, q=2)
+        xy = Wc @ V[:, :2]
+      except Exception:
+        xy = Wc[:, :2]
+      xy = xy / (xy.std(0, keepdim=True) + 1e-6)
+      self.register_buffer("territory_xy", xy.contiguous())             # [T, 2]
+      self.register_buffer("territory_table", W.contiguous())           # [T, D]
+    else:
+      self.register_buffer("territory_xy", torch.zeros(1, 2))
+      self.register_buffer("territory_table", torch.zeros(1, self.d_model))
+
+    # CFG: a second KV cache runs the UNCONDITIONED (null-territory) pass in lockstep, plus the
+    # null territory embedding (the learned cfg-dropout row at index num_territories).
+    self.kv_uncond = KVCachedPrior(prior) if self.use_cfg else self.kv
+    if self.use_cfg:
+      self.register_buffer("null_terr_vec", self.kv.territory_weight[self.num_territories].view(1, self.d_model).contiguous())
+    else:
+      self.register_buffer("null_terr_vec", torch.zeros(1, self.d_model))
+
     _init_buf = torch.zeros(1, self.max_len, self.num_codebooks, dtype=torch.long)
     _init_buf[:, 0, :] = self.start_id
     self.register_buffer("token_buffer", _init_buf)
-    # Scalar state as 0-d long tensors so TorchScript reliably persists mutations across calls.
     self.register_buffer("_current_len", torch.tensor(1, dtype=torch.long))
-    # One token's worth of decoded control frames; _ctrl_pos is the next frame to emit.
-    # Initialised with _ctrl_pos == compression_ratio to signal "empty" on first call.
+    # Pending time-context [1, D] predicting the token at index `_current_len` (cond + uncond).
+    self.register_buffer("_pending_context", torch.zeros(1, self.d_model))
+    self.register_buffer("_pending_context_uncond", torch.zeros(1, self.d_model))
     self.register_buffer("_ctrl_buf", torch.zeros(1, self.compression_ratio, _num_controls))
     self.register_buffer("_ctrl_pos", torch.tensor(self.compression_ratio, dtype=torch.long))
 
-    # The conv decoder needs a few tokens of right-context or the emitted frames are
-    # boundary-corrupted. We decode with a small lookahead and emit a lagging token
-    # (=> ~decode_lookahead tokens of latency), which makes the streaming decode match
-    # a full-sequence decode exactly.
     self.decode_ctx = 8
-    self.decode_lookahead = 2
-    # Index into token_buffer of the next real token to emit (1 == first token after START).
+    self.decode_lookahead = int(decode_lookahead)
     self.register_buffer("_emit_idx", torch.tensor(1, dtype=torch.long))
+
+    # Smoothing low-pass: per-channel running state over ALL control channels (loudness, centroid,
+    # latents), control rate, causal; strength from the input channel.
+    self.register_buffer("_feat_ema", torch.zeros(1, _num_controls))
+    # Reseed: last trigger value (for rising-edge detection across calls).
+    self.register_buffer("_reseed_prev", torch.zeros(()))
+
+    self.reset_state()
+
+  def _territory_vec(self, xy: torch.Tensor) -> torch.Tensor:
+    """Blend territory embeddings by softmax over -distance^2 to the 2-D map points. Returns [1, D]."""
+    d2 = ((self.territory_xy - xy.view(1, 2)) ** 2).sum(-1)             # [T]
+    w = torch.softmax(-d2 / self.terr_map_temp, dim=0)                  # [T]
+    return (w.view(-1, 1) * self.territory_table).sum(0, keepdim=True)  # [1, D]
+
+  def _sample_next(self, h_last: torch.Tensor, temp: float) -> torch.Tensor:
+    """Sample one frame's N codebooks from time-context h_last [1, D]. Returns [1, N] long."""
+    if self.is_joint:
+      return self.kv.depth_sample_last(h_last, temp, 1.0)
+    fc = F.linear(h_last, self.kv.fc_weight, self.kv.fc_bias).view(1, self.num_codebooks, self.codebook_size)
+    t = temp if temp > 1e-4 else 1e-4
+    probs = torch.softmax(fc / t, dim=-1)
+    return torch.multinomial(probs.reshape(-1, self.codebook_size), 1).reshape(1, self.num_codebooks)
+
+  @torch.jit.export
+  def set_territory(self, t: int):
+    # Optional manual default: snap the map to a single zone's 2-D point.
+    pass
 
   @torch.jit.export
   def reset_state(self):
-    # Clean cold start: only the START token in the buffer, nothing decoded yet.
     self.token_buffer.zero_()
     self.token_buffer[:, 0, :] = self.start_id
+    self.kv.reset()
+    h = self.kv.decode_context(self.token_buffer[:, :1, :], 0, None, None)  # [1,1,D]
+    self._pending_context.copy_(h[:, -1, :])
+    if self.use_cfg:
+      self.kv_uncond.reset()
+      hu = self.kv_uncond.decode_context(self.token_buffer[:, :1, :], 0, None, None)
+      self._pending_context_uncond.copy_(hu[:, -1, :])
     self._current_len.fill_(1)
     self._emit_idx.fill_(1)
     self._ctrl_buf.zero_()
     self._ctrl_pos.fill_(self.compression_ratio)
+    self._feat_ema.zero_()
+    self._reseed_prev.zero_()
+
+  def _reanchor(self):
+    """Beat-synced re-seed: drop the token history and re-anchor the prior context to the START
+    token (a fresh phrase), WITHOUT interrupting frame emission (current control block plays out)
+    or the smoothing state. Conditioning (LFO/territory) keeps coming from the live inputs."""
+    self.token_buffer.zero_()
+    self.token_buffer[:, 0, :] = self.start_id
+    self.kv.reset()
+    h = self.kv.decode_context(self.token_buffer[:, :1, :], 0, None, None)
+    self._pending_context.copy_(h[:, -1, :])
+    if self.use_cfg:
+      self.kv_uncond.reset()
+      hu = self.kv_uncond.decode_context(self.token_buffer[:, :1, :], 0, None, None)
+      self._pending_context_uncond.copy_(hu[:, -1, :])
+    self._current_len.fill_(1)
+    self._emit_idx.fill_(1)
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
-    # x: [B, total_params + 2, steps]
-    transposition = x[:1, :-2, :]
-    temperature   = x[:1, -2, :]
-    prediction_annealing = 1 - x[:1, -1, :]
-
     steps = int(x.shape[-1])
     if steps <= 0:
-      return x[:1, :-2, :].float()
+      return torch.zeros(1, self.num_controls, 0)
 
-    local_buf   = self.token_buffer.clone()
-    current_len = int(self._current_len.item())   # tokens generated so far (incl START)
-    emit_idx    = int(self._emit_idx.item())      # buffer index of the next token to emit
-    ctrl_buf    = self._ctrl_buf.clone()          # [1, CR, D]
-    ctrl_pos    = int(self._ctrl_pos.item())      # next frame to emit
+    cd = self.cond_dim
+    # Parse the control layout: [LFO(cond_dim) | TerritoryX,Y | Temperature | (CFG)].
+    if self.use_cond:
+      cond_in = x[:1, :cd, :].permute(0, 2, 1).contiguous()  # [1, steps, cond_dim]
+    else:
+      cond_in = torch.zeros(1, steps, 1)
+    base = cd if self.use_cond else 0
+    if self.use_terr_map:
+      terr_xy_in = x[:1, base:base + 2, :]   # [1, 2, steps]
+      temp_in = x[:1, base + 2, :]           # [1, steps]
+      cfg_in = x[:1, base + 3, :] if self.use_cfg else torch.ones(1, steps)
+      smooth_idx = base + 3 + (1 if self.use_cfg else 0)
+    else:
+      terr_xy_in = torch.zeros(1, 2, steps)
+      temp_in = x[:1, base, :]
+      cfg_in = torch.ones(1, steps)
+      smooth_idx = base + 1
+    feat_smooth = float(torch.clamp(x[0, smooth_idx, -1], 0.0, 0.999)) if self.use_feat_smooth else 0.0
 
-    num_controls = int(ctrl_buf.shape[2])
-    out = torch.zeros(1, steps, num_controls)
+    # Reseed trigger: rising edge (low->high) re-anchors the prior to a fresh phrase. Detect across
+    # this block AND the inter-call boundary so a one-sample bang/ramp is never missed.
+    if self.use_reseed:
+      reseed_idx = smooth_idx + (1 if self.use_feat_smooth else 0)
+      last = float(self._reseed_prev.item())
+      fired = False
+      for t in range(steps):
+        v = float(x[0, reseed_idx, t])
+        if v > 0.5 and last <= 0.5:
+          fired = True
+        last = v
+      self._reseed_prev.fill_(last)
+      if fired:
+        self._reanchor()
+
+    current_len = int(self._current_len.item())
+    emit_idx    = int(self._emit_idx.item())
+    ctrl_buf    = self._ctrl_buf.clone()
+    ctrl_pos    = int(self._ctrl_pos.item())
+    pending     = self._pending_context            # [1, D], predicts token at index current_len
+    pending_u   = self._pending_context_uncond     # [1, D], unconditioned (null-territory) pass
+
+    out = torch.zeros(1, steps, self.num_controls)
     frames_written = 0
-
     CR = self.compression_ratio
-    # Emit exactly `steps` control frames, generating new tokens on demand.
+
     for _iter in range(steps + CR):
       if frames_written >= steps:
         break
 
       if ctrl_pos >= CR:
-        # Generate ahead so emit_idx has `decode_lookahead` tokens of right-context.
         while current_len < emit_idx + 1 + self.decode_lookahead:
-          ti   = int(min(steps - 1, frames_written))
-          temp = torch.clamp(temperature[:, ti:ti+1], min=1e-4)
-
-          prime      = local_buf[:, :current_len, :]
-          logits     = self.prior(prime)
-          next_logits = logits[:, -1, :, :]
-          probs      = torch.softmax(next_logits / temp.unsqueeze(-1), dim=-1)
-          samples    = torch.multinomial(probs.reshape(-1, self.codebook_size), 1).reshape(1, self.num_codebooks)
+          ti = int(min(steps - 1, frames_written))
+          # Per-token conditioning sampled from the (slow) input controls at the current frame.
+          cond_tok = cond_in[:, ti:ti + 1, :] if self.use_cond else None      # [1,1,cond_dim]
+          tvec = self._territory_vec(terr_xy_in[0, :, ti]) if self.use_terr_map else None  # [1,D]
+          temp = float(torch.clamp(temp_in[:, ti], min=1e-4).item())
+          cfg = float(cfg_in[0, ti])
 
           if current_len >= self.max_len:
             shift = current_len - self.init_primer_len
-            local_buf[:, :self.init_primer_len, :] = local_buf[:, shift:current_len, :].clone()
+            self.token_buffer[:, :self.init_primer_len, :] = self.token_buffer[:, shift:current_len, :].clone()
             current_len = self.init_primer_len
             emit_idx = emit_idx - shift
+            self.kv.reset()
+            reprimed = self.kv.decode_context(self.token_buffer[:, :current_len, :], 0, None, tvec)
+            pending = reprimed[:, -1, :]
+            if self.use_cfg:
+              self.kv_uncond.reset()
+              reprimed_u = self.kv_uncond.decode_context(self.token_buffer[:, :current_len, :], 0, None, self.null_terr_vec)
+              pending_u = reprimed_u[:, -1, :]
 
-          local_buf[:, current_len:current_len+1, :] = samples.unsqueeze(1)
+          # Sample the next frame's codebooks (CFG-guided when enabled).
+          if self.use_cfg:
+            samples = self.kv.depth_sample_last_cfg(pending, pending_u, temp, 1.0, cfg)  # [1, N]
+          else:
+            samples = self._sample_next(pending, temp)                                   # [1, N]
+          self.token_buffer[:, current_len:current_len + 1, :] = samples.unsqueeze(1)
+          # Advance the cache(s) by feeding the just-sampled token with its conditioning.
+          advanced = self.kv.decode_context(samples.unsqueeze(1), 0, cond_tok, tvec)
+          pending = advanced[:, -1, :]
+          if self.use_cfg:
+            advanced_u = self.kv_uncond.decode_context(samples.unsqueeze(1), 0, cond_tok, self.null_terr_vec)
+            pending_u = advanced_u[:, -1, :]
           current_len += 1
 
-        # Decode emit_idx with `decode_lookahead` tokens of right-context, then keep
-        # exactly that token's block. Clamp so a leading START token never indexes the VQ.
         lo = max(0, emit_idx - self.decode_ctx)
         hi = emit_idx + 1 + self.decode_lookahead
-        decode_win = local_buf[:, lo:hi, :].clamp(min=0, max=self.codebook_size - 1)
+        decode_win = self.token_buffer[:, lo:hi, :].clamp(min=0, max=self.codebook_size - 1)
         decoded    = self.compressor.decode_codes(decode_win)
         off        = emit_idx - lo
         ctrl_buf   = decoded[:, off * CR:(off + 1) * CR, :].detach()
         ctrl_pos   = 0
-        emit_idx   += 1
+        emit_idx  += 1
 
       take = min(steps - frames_written, CR - ctrl_pos)
       out[:, frames_written:frames_written + take, :] = ctrl_buf[:, ctrl_pos:ctrl_pos + take, :]
@@ -441,12 +615,23 @@ class PriorDiscreteWrapper(torch.nn.Module):
       ctrl_pos       += take
 
     out = out.permute(0, 2, 1)  # [1, D, steps]
-    out = out * prediction_annealing.unsqueeze(1) + transposition
 
-    # Persist all state as tensors so TorchScript keeps mutations across calls.
-    self.token_buffer.copy_(local_buf)
+    # Causal one-pole low-pass over ALL control trajectories (loudness/centroid/latents) at control
+    # rate, state carried across calls. A global "smoothness" macro from the Smoothing input channel
+    # (0=off .. ~0.95 very sluggish).
+    a = feat_smooth
+    if a > 0.0:
+      ema = self._feat_ema  # [1, num_controls]
+      for t in range(steps):
+        ema = a * ema + (1.0 - a) * out[:, :, t]
+        out[:, :, t] = ema
+      self._feat_ema.copy_(ema)
+
     self._current_len.fill_(current_len)
     self._emit_idx.fill_(emit_idx)
+    self._pending_context.copy_(pending)
+    if self.use_cfg:
+      self._pending_context_uncond.copy_(pending_u)
     self._ctrl_buf.copy_(ctrl_buf)
     self._ctrl_pos.fill_(ctrl_pos)
 
@@ -614,7 +799,10 @@ if __name__ == '__main__':
   ddsp.streaming(True)
 
   if config.prior_kind == 'discrete' and prior_discrete is not None:
-    prior = PriorDiscreteWrapper(prior_discrete, compressor, resample_ratio=(config.target_fs / float(ddsp.fs)))
+    prior = PriorDiscreteWrapper(prior_discrete, compressor, resample_ratio=(config.target_fs / float(ddsp.fs)),
+                                 n_feature_channels=feature_dim,
+                                 terr_map_temp=float(_disc.get('terr_map_temp', 0.5)),
+                                 decode_lookahead=int(_disc.get('decode_lookahead', 2)))
 
   if format == 'onnx':
     ddsp.eval()
