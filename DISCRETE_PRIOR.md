@@ -58,6 +58,12 @@ All conditioning is **additive at the Transformer input** (kept separate from th
   - **`cond_dropout`**: zero the envelope for a fraction of training windows ⇒ the model learns
     **freeform** (`cond=0`) *and* LFO‑driven generation. At inference an **LFO‑amount** `α` scales the
     envelope (`α·LFO`): `1` = full follow, `0` = freeform, in‑between = blend. One model, switchable.
+    A *higher* `cond_dropout` (e.g. 0.5) also strengthens the LFO **grip**: it cleans the `cond=0`
+    baseline so LFO‑CFG (below) has more to push against.
+  - **LFO‑CFG** (`--lfo_cfg` in generation): guidance on the cond axis, `forward(cond=0) +
+    s·(forward(LFO) − forward(cond=0))`, so the LFO keeps its hold instead of dissipating as context
+    fills. Needs `cond_dropout`. Especially relevant for the coarse codec, where the strong vocab
+    attractor otherwise overrides the additive cond.
 - **Territory** — a per‑window label (`terr_by_track` = source track, or k‑means clusters) → an
   additive `territory_embedding`. Exposed as a **2‑D map**: PCA of the embeddings places each zone at
   an (x,y); the wrapper blends zones by softmax over −distance² (`terr_map_temp`).
@@ -103,9 +109,8 @@ prior:
     # ── LFO / envelope conditioning ──
     cond_envelope: true           # add the slow control-envelope scaffold
     cond_smooth_frames: 64        # envelope low-pass window (control frames)
-    cond_augment: false           # light cond augmentation (kept off; it weakens the LFO)
-    cond_film: false              # FiLM conditioning instead of additive (kept off)
-    cond_dropout: 0.2             # >0 ⇒ switchable LFO/freeform (zero the cond this often)
+    cond_dropout: 0.5             # >0 ⇒ switchable LFO/freeform; higher also strengthens LFO grip
+                                  #     (feed 0 to the LFO inputs = freeform; use --lfo_cfg for grip)
 
     # ── territories ──
     num_territories: 6            # 0 = no territory conditioning
@@ -143,6 +148,13 @@ prior:
 The codec lives under the sibling `compressor:` section (`compression_ratio` derived from `strides`,
 `num_codebooks`, `codebook_size`, `hidden_dim`, `compressed_dim`, `use_skip_connections: false`).
 
+**Token time‑span.** `compression_ratio` (= product of `strides`) sets how much time one token spans:
+`ms/token = 1000 · compression_ratio / control_rate`. The default `[4,2,2]`=16 → ~43 ms. A **coarse
+codec** `[5,5,3]`=75 → ~200 ms captures whole drum hits as atomic vocabulary entries — cleaner,
+more "intentional" rhythm at the cost of timbral fidelity (bottlenecked by `compressed_dim`, not
+`codebook_size`). At the coarse rate the LFO becomes a slow **macro** control (the beat is the prior's
+job) and zones need CFG ~3–5 to separate; raise `max_len`'s stride so windows stay plentiful.
+
 ---
 
 ## 5. Train & export
@@ -169,3 +181,23 @@ Reusing an existing synth/compressor across prior variants is done with symlinks
 In Max, drive `prior` with your control signals and feed its output to `decode` (or patch a `prior →
 decode` chain). State (KV cache, token buffer, smoothing, reseed) persists across audio blocks; cold
 start is the learned START token.
+
+---
+
+## 6. LFO generator (2nd hierarchy level)
+
+Instead of hand‑drawing the LFO, a small coarse model can **generate** it. `scripts/lfo_generator.py`
+k‑means‑quantises the fine prior's stored cond envelopes (`cond:{idx}`) and trains a 1‑codebook
+`PriorDiscrete` (territory‑conditioned, `cfg_dropout`) over those envelope tokens. It samples a
+plausible LFO trajectory (territory‑CFG via `--lfo_terr_cfg` makes per‑zone LFOs distinct) and feeds
+it to the fine prior as `cond` (with `--lfo_cfg` for grip):
+
+```bash
+python scripts/lfo_generator.py --reuse --territories 0 2 4 --lfo_cfg 5 --lfo_terr_cfg 4 --seconds 60
+```
+
+This is a working two‑level hierarchy (coarse plans the scaffold, fine renders it). The generated
+LFOs are realistic and zone‑distinct; how strongly they *shape* the output depends on **grip**
+(higher `cond_dropout` at training + `--lfo_cfg` at inference; multi‑layer cond injection is a future
+lever). No change to the fine prior or its nn~ export is needed — the integration point is the
+existing `cond` input.

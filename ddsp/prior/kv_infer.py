@@ -296,3 +296,39 @@ class KVCachedPrior(nn.Module):
             eidx = (tok + i * ksz).clamp(0, n * ksz - 1)
             prev = prev + F.embedding(eidx, self.depth_token_embed_weight)
         return toks
+
+    @torch.jit.export
+    def depth_sample_last_cfg2(self, h_cond: torch.Tensor, h_unc_t: torch.Tensor, h_unc_l: torch.Tensor,
+                               temperature: float, top_p: float, cfg_t: float, cfg_l: float) -> torch.Tensor:
+        """Two-axis classifier-free guidance: per codebook,
+        logits = lc + (cfg_t-1)*(lc - lt) + (cfg_l-1)*(lc - ll), where lt = territory-uncond
+        (null territory) and ll = LFO-uncond (cond zeroed). Same sampled token feeds all three chains."""
+        n = self.num_codebooks
+        ksz = self.codebook_size
+        prev = torch.zeros(1, self.d_model, device=h_cond.device, dtype=h_cond.dtype)
+        toks = torch.zeros(1, n, dtype=torch.long, device=h_cond.device)
+        temp = temperature if temperature > 1e-4 else 1e-4
+        wt = cfg_t - 1.0
+        wl = cfg_l - 1.0
+        for i in range(n):
+            dpos = self.depth_pos_weight[i].view(1, self.d_model)
+            lc = F.linear(F.relu(F.linear(h_cond + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
+                          self.depth_fc_weight, self.depth_fc_bias)
+            lt = F.linear(F.relu(F.linear(h_unc_t + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
+                          self.depth_fc_weight, self.depth_fc_bias)
+            ll = F.linear(F.relu(F.linear(h_unc_l + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
+                          self.depth_fc_weight, self.depth_fc_bias)
+            li = lc + wt * (lc - lt) + wl * (lc - ll)
+            probs = F.softmax(li / temp, dim=-1)
+            if top_p < 1.0:
+                sp, si = torch.sort(probs, dim=-1, descending=True)
+                csum = sp.cumsum(dim=-1)
+                keep = (csum - sp) <= top_p
+                sp = sp * keep
+                sp = sp / sp.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+                probs = torch.zeros_like(probs).scatter_(-1, si, sp)
+            tok = torch.multinomial(probs, 1).view(1)
+            toks[:, i] = tok
+            eidx = (tok + i * ksz).clamp(0, n * ksz - 1)
+            prev = prev + F.embedding(eidx, self.depth_token_embed_weight)
+        return toks

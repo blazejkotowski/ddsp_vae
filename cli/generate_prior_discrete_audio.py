@@ -221,6 +221,7 @@ def _sample_tokens(
   cond_env: Optional[torch.Tensor] = None,
   territory_vec_env: Optional[torch.Tensor] = None,
   cfg_scale: float = 1.0,
+  lfo_cfg: float = 1.0,
 ) -> torch.Tensor:
   codebook_size = int(prior.codebook_size)
   num_codebooks = int(prior.num_codebooks)
@@ -291,18 +292,29 @@ def _sample_tokens(
     if territory_vec_env is not None:
       tvec = territory_vec_env[:, min(t - 1, territory_vec_env.shape[1] - 1), :]  # [1, D] blend at this step
     # Joint codebook head: decode the N codebooks autoregressively from the time-context (on-manifold).
+    # LFO-CFG: guide toward the cond envelope (uncond = cond zeroed). Strengthens LFO grip so it
+    # does not dissipate as the context fills (needs a cond_dropout-trained model). Takes precedence
+    # over territory CFG when active.
+    lfo_cfg_on = (float(lfo_cfg) != 1.0 and cond_slice is not None
+                  and getattr(prior, '_cond_dropout', 0.0) > 0.0)
     if getattr(prior, 'is_joint', False):
       h = prior.time_context(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec)[:, -1, :]  # [1, D]
-      hu = None
-      if cfg_on:
+      hu = None; gscale = float(cfg_scale)
+      if lfo_cfg_on:
+        hu = prior.time_context(ctx, territory_id=tid, cond=torch.zeros_like(cond_slice), territory_vec=tvec)[:, -1, :]
+        gscale = float(lfo_cfg)
+      elif cfg_on:
         hu = prior.time_context(ctx, territory_id=null_tid, cond=cond_slice)[:, -1, :]
       buf[:, t, :] = prior.depth_decode_last(h, temperature=float(temperature), top_p=float(top_p),
-                                             h_last_uncond=hu, cfg_scale=float(cfg_scale))
+                                             h_last_uncond=hu, cfg_scale=gscale)
       continue
 
     logits = prior(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec)  # [1, S, N, K]
     next_logits = logits[:, -1, :, :]  # [1, N, K]
-    if cfg_on:
+    if lfo_cfg_on:
+      ul = prior(ctx, territory_id=tid, cond=torch.zeros_like(cond_slice), territory_vec=tvec)[:, -1, :, :]
+      next_logits = ul + float(lfo_cfg) * (next_logits - ul)
+    elif cfg_on:
       ul = prior(ctx, territory_id=null_tid, cond=cond_slice)[:, -1, :, :]  # uncond [1, N, K]
       next_logits = ul + float(cfg_scale) * (next_logits - ul)
 
@@ -348,6 +360,7 @@ def main():
   ap.add_argument('--cond_lfo', action='store_true', help='Drive a cond-trained prior with a beat-synced LFO control envelope.')
   ap.add_argument('--cond_lfo_beat_hz', type=float, default=2.0, help='LFO beat rate for envelope conditioning.')
   ap.add_argument('--lfo_amount', type=float, default=1.0, help='Scale the LFO envelope (1=full, 0=freeform; needs a cond_dropout-trained model for clean 0).')
+  ap.add_argument('--lfo_cfg', type=float, default=1.0, help='LFO classifier-free guidance (1=off, >1 strengthens LFO adherence so it does not dissipate; needs cond_dropout).')
   ap.add_argument('--territory_a', type=int, default=-1, help='Interpolation start territory (with --territory_b).')
   ap.add_argument('--territory_b', type=int, default=-1, help='Interpolation end territory; output morphs A->B over the clip.')
   ap.add_argument('--cfg_scale', type=float, default=1.0, help='Classifier-free guidance scale (1.0 = off; >1 amplifies territory faithfulness; needs a cfg_dropout-trained prior).')
@@ -482,6 +495,7 @@ def main():
     cond_env=cond_env,
     territory_vec_env=territory_vec_env,
     cfg_scale=float(args.cfg_scale),
+    lfo_cfg=float(args.lfo_cfg),
   )
 
   # Diagnostic: fraction of unique tokens (low -> collapsed / "loopy").

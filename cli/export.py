@@ -396,12 +396,16 @@ class PriorDiscreteWrapper(torch.nn.Module):
     # NULL/uncond territory row (cfg_dropout > 0, so territory_weight has num_territories+1 rows).
     self.use_cfg = bool(self.is_joint and self.use_terr_map
                         and int(self.kv.territory_weight.shape[0]) > self.num_territories)
-    # nn~ inputs: [LFO(cond_dim) | TerritoryX,Y | Temperature | (CFG) | Smoothing | Reseed].
+    # LFO-CFG (cond-axis guidance): depth_sample_last_cfg2 in kv_infer is ready; 3rd-cache wiring +
+    # input channel are staged, not yet enabled (kept inert so the wrapper stays valid).
+    self.use_lfo_cfg = False
+    # nn~ inputs: [LFO(cond_dim) | TerritoryX,Y | Temperature | (CFG) | Smoothing | Reseed | (LFO CFG)].
     self.use_feat_smooth = int(n_feature_channels) > 0
     self.use_reseed = True  # beat-synced phrase re-anchor (rising-edge trigger)
     self.prior_in_channels = ((self.cond_dim if self.use_cond else 0)
                               + (2 if self.use_terr_map else 0) + 1 + (1 if self.use_cfg else 0)
-                              + (1 if self.use_feat_smooth else 0) + (1 if self.use_reseed else 0))
+                              + (1 if self.use_feat_smooth else 0) + (1 if self.use_reseed else 0)
+                              + (1 if self.use_lfo_cfg else 0))
     self.terr_map_temp = float(terr_map_temp)  # blend sharpness of the 2-D territory map
 
     with torch.no_grad():
