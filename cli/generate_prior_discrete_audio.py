@@ -222,6 +222,8 @@ def _sample_tokens(
   territory_vec_env: Optional[torch.Tensor] = None,
   cfg_scale: float = 1.0,
   lfo_cfg: float = 1.0,
+  style_vec: Optional[torch.Tensor] = None,
+  style_cfg: float = 1.0,
 ) -> torch.Tensor:
   codebook_size = int(prior.codebook_size)
   num_codebooks = int(prior.num_codebooks)
@@ -297,25 +299,40 @@ def _sample_tokens(
     # over territory CFG when active.
     lfo_cfg_on = (float(lfo_cfg) != 1.0 and cond_slice is not None
                   and getattr(prior, '_cond_dropout', 0.0) > 0.0)
+    # Style CFG: guide toward the reference style (uncond = style zeroed). Needs a style_dropout-
+    # trained model so style=0 is a learned null. Sits between LFO-CFG and territory-CFG in priority.
+    style_cfg_on = (float(style_cfg) != 1.0 and style_vec is not None
+                    and getattr(prior, '_style_dropout', 0.0) > 0.0)
     if getattr(prior, 'is_joint', False):
-      h = prior.time_context(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec)[:, -1, :]  # [1, D]
+      h = prior.time_context(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec,
+                             style_vec=style_vec)[:, -1, :]  # [1, D]
       hu = None; gscale = float(cfg_scale)
       if lfo_cfg_on:
-        hu = prior.time_context(ctx, territory_id=tid, cond=torch.zeros_like(cond_slice), territory_vec=tvec)[:, -1, :]
+        hu = prior.time_context(ctx, territory_id=tid, cond=torch.zeros_like(cond_slice), territory_vec=tvec,
+                                style_vec=style_vec)[:, -1, :]
         gscale = float(lfo_cfg)
+      elif style_cfg_on:
+        hu = prior.time_context(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec,
+                                style_vec=torch.zeros_like(style_vec))[:, -1, :]
+        gscale = float(style_cfg)
       elif cfg_on:
-        hu = prior.time_context(ctx, territory_id=null_tid, cond=cond_slice)[:, -1, :]
+        hu = prior.time_context(ctx, territory_id=null_tid, cond=cond_slice, style_vec=style_vec)[:, -1, :]
       buf[:, t, :] = prior.depth_decode_last(h, temperature=float(temperature), top_p=float(top_p),
                                              h_last_uncond=hu, cfg_scale=gscale)
       continue
 
-    logits = prior(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec)  # [1, S, N, K]
+    logits = prior(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec, style_vec=style_vec)  # [1, S, N, K]
     next_logits = logits[:, -1, :, :]  # [1, N, K]
     if lfo_cfg_on:
-      ul = prior(ctx, territory_id=tid, cond=torch.zeros_like(cond_slice), territory_vec=tvec)[:, -1, :, :]
+      ul = prior(ctx, territory_id=tid, cond=torch.zeros_like(cond_slice), territory_vec=tvec,
+                 style_vec=style_vec)[:, -1, :, :]
       next_logits = ul + float(lfo_cfg) * (next_logits - ul)
+    elif style_cfg_on:
+      ul = prior(ctx, territory_id=tid, cond=cond_slice, territory_vec=tvec,
+                 style_vec=torch.zeros_like(style_vec))[:, -1, :, :]
+      next_logits = ul + float(style_cfg) * (next_logits - ul)
     elif cfg_on:
-      ul = prior(ctx, territory_id=null_tid, cond=cond_slice)[:, -1, :, :]  # uncond [1, N, K]
+      ul = prior(ctx, territory_id=null_tid, cond=cond_slice, style_vec=style_vec)[:, -1, :, :]  # uncond [1, N, K]
       next_logits = ul + float(cfg_scale) * (next_logits - ul)
 
     if sampling == 'argmax':
@@ -372,6 +389,13 @@ def main():
                   help='Optional: path to a WAV file used to prime the prior (real tokens for the primer window).')
   ap.add_argument('--prime_seconds', type=float, default=4.0, help='How many seconds of prime_wav to use.')
   ap.add_argument('--prime_offset_s', type=float, default=0.0, help='Offset (seconds) into prime_wav.')
+  ap.add_argument('--style_ref', type=str, default='',
+                  help='Reference WAV to extract a global STYLE code from (style-priming; needs a style_dim-trained prior). '
+                       'Unlike --prime_wav (token continuation), this conditions the WHOLE generation on the reference texture.')
+  ap.add_argument('--style_ref_seconds', type=float, default=8.0, help='Seconds of style_ref to encode the style from.')
+  ap.add_argument('--style_ref_offset_s', type=float, default=0.0, help='Offset (seconds) into style_ref.')
+  ap.add_argument('--style_cfg', type=float, default=1.0,
+                  help='Style classifier-free guidance (1=off, >1 amplifies adherence to the reference style; needs style_dropout).')
 
   ap.add_argument('--target_fs', type=int, default=0, help='Output WAV sample rate (0 = keep DDSP fs).')
   ap.add_argument('--out_dir', type=str, default='outputs/generated_prior_discrete', help='Output directory.')
@@ -461,6 +485,26 @@ def main():
       print(f'WARNING: prime_tokens shorter than primer_len; shrinking primer_len to {primer_tokens.shape[1]}')
       primer_len = int(primer_tokens.shape[1])
 
+  # Style priming: extract a global style code `s` from a reference clip's tokens.
+  style_vec = None
+  if args.style_ref and int(getattr(prior, '_style_dim', 0)) > 0:
+    print('extracting style from:', args.style_ref)
+    ref_tokens = _prime_tokens_from_wav(
+      ddsp=ddsp,
+      compressor=compressor,
+      control_space=control_space,
+      feature_dim=feature_dim,
+      latent_size=latent_size,
+      wav_path=args.style_ref,
+      seconds=float(args.style_ref_seconds),
+      offset_s=float(args.style_ref_offset_s),
+      device=device,
+    )
+    style_vec = prior._encode_style(ref_tokens.to(device))  # [1, style_dim]
+    print('style vec:', tuple(style_vec.shape), 'norm', float(style_vec.norm()))
+  elif args.style_ref:
+    print('WARNING: --style_ref given but prior has no style encoder (style_dim=0); ignoring.')
+
   print('sampling tokens...')
   cond_env = None
   if args.cond_lfo and int(getattr(prior, '_cond_dim', 0)) > 0:
@@ -496,6 +540,8 @@ def main():
     territory_vec_env=territory_vec_env,
     cfg_scale=float(args.cfg_scale),
     lfo_cfg=float(args.lfo_cfg),
+    style_vec=style_vec,
+    style_cfg=float(args.style_cfg),
   )
 
   # Diagnostic: fraction of unique tokens (low -> collapsed / "loopy").

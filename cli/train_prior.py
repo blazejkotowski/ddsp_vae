@@ -352,10 +352,21 @@ def _train_discrete(cfg: DictConfig, control_space, synth_configs, in_memory: bo
     cfg_dropout=float(getattr(getattr(cfg.prior, 'discrete', {}), 'cfg_dropout', 0.0)),
     cond_dropout=float(getattr(getattr(cfg.prior, 'discrete', {}), 'cond_dropout', 0.0)),
     joint_codebooks=bool(getattr(getattr(cfg.prior, 'discrete', {}), 'joint_codebooks', False)),
+    style_dim=int(getattr(getattr(cfg.prior, 'discrete', {}), 'style_dim', 0)),
+    style_dropout=float(getattr(getattr(cfg.prior, 'discrete', {}), 'style_dropout', 0.0)),
+    context_dropout=float(getattr(getattr(cfg.prior, 'discrete', {}), 'context_dropout', 0.0)),
+    style_aux_weight=float(getattr(getattr(cfg.prior, 'discrete', {}), 'style_aux_weight', 0.0)),
+    ss_prob=float(getattr(getattr(cfg.prior, 'discrete', {}), 'ss_prob', 0.0)),
+    ss_anneal_steps=int(getattr(getattr(cfg.prior, 'discrete', {}), 'ss_anneal_steps', 0)),
+    ss_temperature=float(getattr(getattr(cfg.prior, 'discrete', {}), 'ss_temperature', 1.0)),
+    ss_iters=int(getattr(getattr(cfg.prior, 'discrete', {}), 'ss_iters', 1)),
     device=device,
   )
   if int(getattr(ds, 'num_territories', 0)) > 0:
     print(f"Territory conditioning enabled: {ds.num_territories} territories")
+  if int(getattr(getattr(cfg.prior, 'discrete', {}), 'style_dim', 0)) > 0:
+    print(f"Style encoder enabled: style_dim={cfg.prior.discrete.style_dim} "
+          f"style_dropout={getattr(cfg.prior.discrete, 'style_dropout', 0.0)}")
 
   force_restart = cfg.prior.training.get('force_restart', False)
   ckpt_path = None

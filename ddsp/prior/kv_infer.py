@@ -128,7 +128,23 @@ class KVCachedPrior(nn.Module):
             self.register_buffer("cond_proj_weight", torch.zeros(self.d_model, 1))
             self.register_buffer("cond_proj_bias", torch.zeros(self.d_model))
 
-        # FiLM modulation tables (gamma|beta), mapped from the trained model.
+        # Style conditioning: input-additive projection + per-layer FiLM, mapped from the trained model.
+        # At realtime the style code comes from the XY pad (no encoder needed in the loop).
+        self.style_dim = int(getattr(prior, "_style_dim", 0))
+        self.has_style = bool(getattr(prior, "_style_proj", None) is not None and self.style_dim > 0)
+        if self.has_style:
+            self.register_buffer("style_proj_weight", prior._style_proj.weight.detach().clone())
+            self.register_buffer("style_proj_bias", prior._style_proj.bias.detach().clone())
+            fw = torch.stack([l.weight.detach().clone() for l in prior._style_film], 0)  # [L, 2D, style_dim]
+            fb = torch.stack([l.bias.detach().clone() for l in prior._style_film], 0)     # [L, 2D]
+            self.register_buffer("style_film_weight", fw)
+            self.register_buffer("style_film_bias", fb)
+        else:
+            self.register_buffer("style_proj_weight", torch.zeros(self.d_model, 1))
+            self.register_buffer("style_proj_bias", torch.zeros(self.d_model))
+            self.register_buffer("style_film_weight", torch.zeros(1, 2 * self.d_model, 1))
+            self.register_buffer("style_film_bias", torch.zeros(1, 2 * self.d_model))
+
         # WS4 joint codebook depth head, mapped from the trained model (zeros when independent).
         self.is_joint = bool(getattr(prior, "_joint", False))
         if self.is_joint:
@@ -164,12 +180,15 @@ class KVCachedPrior(nn.Module):
 
     def _context(self, tokens: torch.Tensor, territory: int = 0,
                  cond: Optional[torch.Tensor] = None,
-                 territory_vec: Optional[torch.Tensor] = None) -> torch.Tensor:
+                 territory_vec: Optional[torch.Tensor] = None,
+                 style_vec: Optional[torch.Tensor] = None) -> torch.Tensor:
         """tokens: [1, S, N] long. Returns the relu'd time-context [1, S, D]. Appends to cache.
         territory: index into the conditioning table (ignored when disabled).
         cond: optional [1, S, cond_dim] control envelope (the LFO) for these S positions.
         territory_vec: optional [1, d_model] continuous (interpolated) territory vector;
-                       overrides the territory index when given."""
+                       overrides the territory index when given.
+        style_vec: optional [1, style_dim] global style code (from the XY pad); injected additively
+                   at the input and as per-layer FiLM (mirrors PriorDiscrete._time_context)."""
         if tokens.dtype != torch.long:
             tokens = tokens.long()
         b, s, n = tokens.shape
@@ -202,6 +221,11 @@ class KVCachedPrior(nn.Module):
             cproj = F.linear(cond.float(), self.cond_proj_weight, self.cond_proj_bias)  # [1,S,D]
             x = x + cproj.permute(1, 0, 2)  # -> [S,1,D]
 
+        # Style conditioning (global): add the projected style at the input (every position).
+        if self.has_style and style_vec is not None:
+            sp = F.linear(style_vec.view(1, self.style_dim), self.style_proj_weight, self.style_proj_bias)  # [1,D]
+            x = x + sp.view(1, 1, self.d_model)
+
         # Additive causal mask [S, off+S]: query i (abs off+i) sees key j iff j <= off+i.
         total = off + s
         key_pos = torch.arange(total, device=x.device).view(1, total)
@@ -210,8 +234,17 @@ class KVCachedPrior(nn.Module):
         attn_mask = torch.zeros(s, total, device=x.device)
         attn_mask = attn_mask.masked_fill(~allowed, float("-inf"))
 
+        # Per-layer style FiLM (applied AFTER each layer, mirroring _time_context).
+        li = 0
         for layer in self.layers:
             x = layer.decode(x, off, attn_mask)
+            if self.has_style and style_vec is not None:
+                gb = F.linear(style_vec.view(1, self.style_dim),
+                              self.style_film_weight[li], self.style_film_bias[li])  # [1, 2D]
+                g = gb[:, :self.d_model].view(1, 1, self.d_model)
+                beta = gb[:, self.d_model:].view(1, 1, self.d_model)
+                x = x * (1.0 + g) + beta
+            li = li + 1
 
         x = x * self.sqrt_d
         x = x.permute(1, 0, 2)  # [1,S,D]
@@ -223,9 +256,10 @@ class KVCachedPrior(nn.Module):
     @torch.jit.export
     def decode(self, tokens: torch.Tensor, territory: int = 0,
                cond: Optional[torch.Tensor] = None,
-               territory_vec: Optional[torch.Tensor] = None) -> torch.Tensor:
+               territory_vec: Optional[torch.Tensor] = None,
+               style_vec: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Independent-head logits [1, S, N, K] (non-joint models)."""
-        h = self._context(tokens, territory, cond, territory_vec)
+        h = self._context(tokens, territory, cond, territory_vec, style_vec)
         b = h.shape[0]; s = h.shape[1]
         fc = F.linear(h, self.fc_weight, self.fc_bias)
         return fc.view(b, s, self.num_codebooks, self.codebook_size)
@@ -233,10 +267,11 @@ class KVCachedPrior(nn.Module):
     @torch.jit.export
     def decode_context(self, tokens: torch.Tensor, territory: int = 0,
                        cond: Optional[torch.Tensor] = None,
-                       territory_vec: Optional[torch.Tensor] = None) -> torch.Tensor:
+                       territory_vec: Optional[torch.Tensor] = None,
+                       style_vec: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Append tokens to the cache and return the relu'd time-context [1, S, D]
         (for joint-head sampling via depth_sample_last on the last position)."""
-        return self._context(tokens, territory, cond, territory_vec)
+        return self._context(tokens, territory, cond, territory_vec, style_vec)
 
     @torch.jit.export
     def depth_sample_last(self, h_last: torch.Tensor, temperature: float, top_p: float) -> torch.Tensor:
@@ -283,42 +318,6 @@ class KVCachedPrior(nn.Module):
             lu = F.linear(F.relu(F.linear(h_uncond + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
                           self.depth_fc_weight, self.depth_fc_bias)
             li = lu + cfg_scale * (lc - lu)
-            probs = F.softmax(li / temp, dim=-1)
-            if top_p < 1.0:
-                sp, si = torch.sort(probs, dim=-1, descending=True)
-                csum = sp.cumsum(dim=-1)
-                keep = (csum - sp) <= top_p
-                sp = sp * keep
-                sp = sp / sp.sum(dim=-1, keepdim=True).clamp_min(1e-9)
-                probs = torch.zeros_like(probs).scatter_(-1, si, sp)
-            tok = torch.multinomial(probs, 1).view(1)
-            toks[:, i] = tok
-            eidx = (tok + i * ksz).clamp(0, n * ksz - 1)
-            prev = prev + F.embedding(eidx, self.depth_token_embed_weight)
-        return toks
-
-    @torch.jit.export
-    def depth_sample_last_cfg2(self, h_cond: torch.Tensor, h_unc_t: torch.Tensor, h_unc_l: torch.Tensor,
-                               temperature: float, top_p: float, cfg_t: float, cfg_l: float) -> torch.Tensor:
-        """Two-axis classifier-free guidance: per codebook,
-        logits = lc + (cfg_t-1)*(lc - lt) + (cfg_l-1)*(lc - ll), where lt = territory-uncond
-        (null territory) and ll = LFO-uncond (cond zeroed). Same sampled token feeds all three chains."""
-        n = self.num_codebooks
-        ksz = self.codebook_size
-        prev = torch.zeros(1, self.d_model, device=h_cond.device, dtype=h_cond.dtype)
-        toks = torch.zeros(1, n, dtype=torch.long, device=h_cond.device)
-        temp = temperature if temperature > 1e-4 else 1e-4
-        wt = cfg_t - 1.0
-        wl = cfg_l - 1.0
-        for i in range(n):
-            dpos = self.depth_pos_weight[i].view(1, self.d_model)
-            lc = F.linear(F.relu(F.linear(h_cond + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
-                          self.depth_fc_weight, self.depth_fc_bias)
-            lt = F.linear(F.relu(F.linear(h_unc_t + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
-                          self.depth_fc_weight, self.depth_fc_bias)
-            ll = F.linear(F.relu(F.linear(h_unc_l + dpos + prev, self.depth_mlp_weight, self.depth_mlp_bias)),
-                          self.depth_fc_weight, self.depth_fc_bias)
-            li = lc + wt * (lc - lt) + wl * (lc - ll)
             probs = F.softmax(li / temp, dim=-1)
             if top_p < 1.0:
                 sp, si = torch.sort(probs, dim=-1, descending=True)

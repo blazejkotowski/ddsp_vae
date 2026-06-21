@@ -1,0 +1,182 @@
+# ============================================================================================
+# TEMPLATE config for a DDSP-VAE synth + grouped-VQ codec + discrete STYLE prior (nn~ instrument).
+#
+# Pipeline (3 stages, each reads this one file):
+#   1. python cli/train.py        --config-name <name>   -> trains the SYNTH (sections: audio/model/
+#                                                            losses/adversarial/trainer)
+#   2. python cli/train_prior.py  --config-name <name>   -> trains the COMPRESSOR (codec) then the
+#                                                            PRIOR        (sections: prior/compressor)
+#   3. python cli/export.py       --config <name>        -> models/<name>.ts for Max/MSP
+#
+# Copy this file to configs/<name>.yaml, set `experiment.name` + `data.dataset_path`, adjust as noted.
+# Defaults below are the shipped "groovy realtime style" recipe. See DISCRETE_PRIOR.md for the why.
+# ============================================================================================
+
+experiment:
+  name: my_model                 # all artifacts go under training/{synth,compressor,prior_discrete}/<name>
+  training_dir: training         # root output dir
+
+# ── audio / dataset ─────────────────────────────────────────────────────────────────────────
+audio:
+  fs: 48000                      # sample rate (must match your wavs; resample beforehand otherwise)
+  chunk_duration_s: 2.0          # training chunk length for the SYNTH (seconds)
+  n_channels: 2                  # 1 = mono, 2 = stereo
+
+data:
+  dataset_path: /path/to/your/dataset/processed-stereo   # dir of .wav files (globbed **/*.wav)
+  augmentations:                 # optional waveform augmentations during synth training
+    - type: RandomMute
+      params:
+        prob: 0.1                # randomly silence a fraction of frames (robustness)
+  # TIP: per-track loudness-normalise a multi-style dataset (e.g. RMS ~0.1) before training, or the
+  #      loudest tracks dominate the MRSTFT loss and quiet styles reconstruct poorly.
+
+# ── SYNTH (DDSP-VAE): audio <-> control trajectory ────────────────────────────────────────────
+model:
+  resampling_factor: 128         # control rate = fs / resampling_factor (48000/128 = 375 Hz).
+                                 #   Lower = finer control (more compute); this + the codec set the
+                                 #   final token rate (see compressor.strides).
+  control_space:                 # the per-frame control vector the prior ultimately generates.
+    - name: loudness             #   ch 0 — RMS loudness (carries dynamics/groove)
+      dim: 1
+      source: feature
+      extractor: LibrosaFeatureExtractor
+      params: { feature_fn_name: rms, smoothing_kernel_size: 1, postprocess: true }
+    - name: centroid             #   ch 1 — spectral centroid (brightness)
+      dim: 1
+      source: feature
+      extractor: LibrosaFeatureExtractor
+      params: { feature_fn_name: spectral_centroid, smoothing_kernel_size: 1, postprocess: true }
+    - name: latents              #   ch 2..3 — VAE latents (timbre); dim = latent_size
+      dim: 2
+      source: latent
+  synths:
+    - type: BendableNoiseBandSynth   # the noise-band synth; cheap + realtime
+      params:
+        n_filters: 1000              # number of noise bands (more = finer spectra, more compute)
+  latent_smoothing_kernel: 1     # temporal smoothing of latents (1 = off)
+  decoder_gru_layers: 2          # decoder recurrence depth
+  decoder_temporal_stride: 4     # decoder runs at control_rate/stride then LINEAR-upsamples
+                                 #   (linear, not zero-order-hold — this is the click fix; keep ≥2)
+  learning_rate: 1e-4
+  plateau_patience: 15000        # LR plateau scheduler patience (steps)
+  capacity: 24                   # VAE bottleneck capacity (latent expressivity)
+  beta:                          # β-VAE KLD warmup (regularises the latent space)
+    target: 0.001                #   final β
+    start_epoch: 30              #   hold β=0 until here
+    end_epoch: 50                #   linearly ramp to target by here
+
+losses:                          # SYNTH reconstruction loss (registry-driven; MRSTFT is the default)
+  - type: MRSTFT
+    weight: 1.0
+    params:
+      fft_sizes: [2053, 1021, 509, 257, 129, 65, 33]
+
+adversarial:                     # optional GAN fine-tuning of the synth (off by default)
+  enabled: false
+  weights: { gen: 0.01, disc: 0.01, fm: 0.01 }
+  schedule: { g_start_epoch: 50, d_start_epoch: 60 }
+
+trainer:                         # SYNTH training loop
+  batch_size: 6
+  max_epochs: 100
+  log_every_n_steps: 10
+  force_restart: false           # true = ignore existing checkpoint and train from scratch
+
+# ── PRIOR + CODEC ─────────────────────────────────────────────────────────────────────────────
+prior:
+  enabled: true
+
+  discrete:
+    enabled: true
+    compressor_ckpt: null        # null = auto-train/locate the codec under training/compressor/<name>
+
+    # ── LFO / cond envelope (optional slow scaffold the prior can follow) ──
+    cond_envelope: true          # add the low-passed control envelope as conditioning
+    cond_smooth_frames: 64       # envelope low-pass window (control frames)
+    cond_dropout: 0.5            # zero the envelope for this fraction of windows -> the model also
+                                 #   learns FREEFORM (cond=0); feed 0 to the LFO inputs at play time.
+
+    # ── learned STYLE encoder (the main steering; becomes the XY pad at play time) ──
+    style_dim: 64                # >0 enables the StyleEncoder + the style XY pad. 0 = no style.
+    style_dropout: 0.2           # zero `s` sometimes -> a learned null style => Style-CFG capable
+    style_aux_weight: 0.3        # aux head classifies the source track from `s` -> separable styles
+                                 #   (pad zones become distinct). Needs num_territories>0 (per-track).
+
+    # ── generation robustness (keep dynamics + groove at free-running) ──
+    context_dropout: 0.0         # corrupt this fraction of context tokens (forces reliance on `s`).
+                                 #   0 on the shipped model: >0 makes style stronger but COMPRESSES
+                                 #   loudness dynamics. Leave 0 unless style won't steer.
+    ss_prob: 0.3                 # scheduled sampling: train on the model's OWN sampled context
+    ss_iters: 3                  #   >1 = iterate the re-sampling so the context carries realistic
+                                 #   multi-step drift (stops free-run dynamics from flattening)
+    ss_anneal_steps: 4000        # ramp ss_prob 0 -> target over this many steps (warmup)
+    ss_temperature: 1.0          # sampling temperature used when drawing those context tokens
+
+    # ── territory labels (legacy; here they supply the style-aux classes) ──
+    num_territories: 12          # per-window labels; set to your number of source tracks
+    terr_by_track: true          # label = source track (else k-means clusters)
+    terr_rich: true              # rich descriptor for k-means (ignored when terr_by_track)
+
+    # ── guidance & sampling head ──
+    cfg_dropout: 0.15            # >0 trains a null-territory row (territory-CFG); style-CFG uses
+                                 #   style_dropout instead. Keep >0 to allow CFG either way.
+    joint_codebooks: true        # depth head: sample the 4 codebooks jointly (on-manifold; kills the
+                                 #   codebook-independence clicks). Keep true.
+
+    # ── nn~ export-time knobs ──
+    terr_map_temp: 0.5           # legacy territory-map blend sharpness (the STYLE pad auto-derives its own)
+    decode_lookahead: 2          # streaming-decode lookahead (tokens of latency in nn~)
+
+  model:                         # the prior Transformer
+    embedding_dim: 64            # d_model = embedding_dim × num_codebooks (64×4 = 256)
+    nhead: 8                     # attention heads (d_model must divide by nhead)
+    num_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.0
+    max_len: 256                 # context length in TOKENS (≈ max_len / token_rate seconds)
+
+  dataset:                       # prior token-window dataset
+    stride_factor: 0.004         # window hop as a fraction of max_len (smaller = more windows)
+    respect_boundaries: true     # never build windows that cross a track boundary
+    in_memory: true              # cache token windows in RAM (faster; needs enough memory)
+
+  training:                      # prior training loop (cap steps with the PRIOR_MAX_STEPS env var;
+    batch_size: 64               #   ~50k steps is the sweet spot here — much more can overtrain and
+    max_epochs: 10000            #   regress groove/reach)
+    num_workers: 4
+    lr: 5e-4
+    force_restart: false
+    val_fraction: 0.0            # held-out fraction (0 = none; val acc is noisy on tiny sets)
+    split_strategy: blocked_random
+    split_gap: null
+    split_seed: 0
+
+# ── CODEC (LatentCompressor: grouped-VQ over the control sequence) ─────────────────────────────
+compressor:
+  force_restart: false
+  hidden_dim: 64
+  compressed_dim: 16             # VQ bottleneck width (timbral fidelity per token; raise for richer
+                                 #   tokens, but it's the main fidelity bottleneck — not codebook_size)
+  strides: [4, 2, 2]             # TOKEN RATE = control_rate / product(strides).  [4,2,2]=16 ->
+                                 #   375/16 = 23.4 Hz (≈43 ms/token) -> ~12 tokens/beat at 125 bpm.
+                                 #   ⚠ USE THIS for rhythmic material. A coarse [5,5,3]=75 (~200 ms)
+                                 #   captures whole drum hits but is sub-Nyquist for the beat, so the
+                                 #   prior CANNOT generate a stable groove ("groove comes and goes").
+  stride_factor: 0.5
+  num_residual_layers: 2
+  kernel_size: 5
+  max_channels: 448
+  use_skip_connections: false    # MUST be false: codes-only decoding (the prior generates codes only)
+
+  vq:
+    enabled: true
+    num_codebooks: 4             # grouped VQ: N indices per token (the prior's per-step "depth")
+    codebook_size: 256           # entries per codebook
+    beta: 0.25                   # commitment loss weight
+    loss_weight: 0.2             # VQ loss weight in the codec objective
+
+  batch_size: 32
+  max_epochs: 250
+  learning_rate: 1e-4
+  num_workers: 0

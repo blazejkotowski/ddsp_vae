@@ -114,14 +114,17 @@ class ScriptedDDSP(nn_tilde.Module):
         # New layout: [LFO control envelope | normalised 2-D territory map | temperature].
         cd = int(self.prior_model.cond_dim)
         use_terr = bool(self.prior_model.use_terr_map)
+        use_style = bool(self.prior_model.use_style)
         use_cfg = bool(self.prior_model.use_cfg)
         in_ch = int(self.prior_model.prior_in_channels)
         labels = [f'(signal) LFO {i}' for i in range(1, cd + 1)]
-        if use_terr:
+        if use_style:
+          labels += ['(signal) Style X', '(signal) Style Y']
+        elif use_terr:
           labels += ['(signal) Territory X', '(signal) Territory Y']
         labels += ['(signal) Temperature']
         if use_cfg:
-          labels += ['(signal) CFG Strength']
+          labels += ['(signal) Style CFG' if use_style else '(signal) CFG Strength']
         if bool(self.prior_model.use_feat_smooth):
           labels += ['(signal) Smoothing']
         if bool(self.prior_model.use_reseed):
@@ -352,6 +355,43 @@ class LatentCompressorDecodeOnly(torch.nn.Module):
     return self.decode_codes(indices, output_len=output_len)
 
 
+def _compute_style_table(prior, cfg):
+  """Per-track style centroids [num_territories, style_dim] for the XY-pad style map.
+
+  Mean of the StyleEncoder over real token-windows of each track (from the prior token cache)."""
+  import glob as _glob
+  import random as _r
+  from collections import defaultdict
+  from ddsp.prior.dataset import PriorTokenSequenceDataset
+  ds_path = str((cfg.get('data', {}) or {}).get('dataset_path', '')).rstrip('/')
+  caches = _glob.glob(os.path.join(ds_path, 'prior_tokens_cache_*.lmdb'))
+  if not caches:
+    caches = _glob.glob(os.path.join(os.path.dirname(ds_path), 'prior_tokens_cache_*.lmdb'))
+  if not caches:
+    print("WARNING: no prior token cache found; style XY map disabled.")
+    return None
+  cache = sorted(caches, key=os.path.getmtime)[-1]
+  ds = PriorTokenSequenceDataset(cache, in_memory=False)
+  nter = int(getattr(prior, '_num_territories', 0))
+  if nter <= 0:
+    return None
+  byt = defaultdict(list)
+  idxs = _r.sample(range(len(ds)), min(4000, len(ds)))
+  for i in idxs:
+    item = ds[i]
+    byt[int(item[2])].append(item[0])
+  sd = int(prior._style_dim)
+  cents = []
+  with torch.no_grad():
+    for t in range(nter):
+      ws = byt.get(t, [])
+      if len(ws) == 0:
+        cents.append(torch.zeros(sd))
+      else:
+        cents.append(prior._encode_style(torch.stack(ws[:120])).mean(0))
+  return torch.stack(cents).float()  # [T, style_dim]
+
+
 class PriorDiscreteWrapper(torch.nn.Module):
   """Realtime nn~ wrapper for the (joint-codebook) discrete prior.
 
@@ -367,7 +407,8 @@ class PriorDiscreteWrapper(torch.nn.Module):
   CFG runs a second (null-territory) KV cache in lockstep and guides each codebook's logits.
   """
   def __init__(self, prior: PriorDiscrete, compressor: torch.nn.Module, resample_ratio: float = 1.0,
-               n_feature_channels: int = 2, terr_map_temp: float = 0.5, decode_lookahead: int = 2):
+               n_feature_channels: int = 2, terr_map_temp: float = 0.5, decode_lookahead: int = 2,
+               style_table: Optional[torch.Tensor] = None):
     super().__init__()
 
     # KV-cached incremental prior (weights mapped from the trained PriorDiscrete).
@@ -390,23 +431,28 @@ class PriorDiscreteWrapper(torch.nn.Module):
     self.cond_dim = int(getattr(prior, '_cond_dim', 0))
     self.use_cond = self.cond_dim > 0
     self.num_territories = int(getattr(prior, '_num_territories', 0))
-    self.use_terr_map = self.num_territories > 0
     self.d_model = int(prior._d_model)
-    # Classifier-free guidance is available when the model is joint AND was trained with a learned
-    # NULL/uncond territory row (cfg_dropout > 0, so territory_weight has num_territories+1 rows).
-    self.use_cfg = bool(self.is_joint and self.use_terr_map
-                        and int(self.kv.territory_weight.shape[0]) > self.num_territories)
-    # LFO-CFG (cond-axis guidance): depth_sample_last_cfg2 in kv_infer is ready; 3rd-cache wiring +
-    # input channel are staged, not yet enabled (kept inert so the wrapper stays valid).
-    self.use_lfo_cfg = False
-    # nn~ inputs: [LFO(cond_dim) | TerritoryX,Y | Temperature | (CFG) | Smoothing | Reseed | (LFO CFG)].
+    # STYLE on the XY pad: a learned global style code (style_dim) blended from per-track centroids,
+    # mapped to 2-D (PCA). When present it REPLACES territory on the XY pad (style is the steering).
+    self.style_dim = int(getattr(prior, '_style_dim', 0))
+    self.has_style = bool(self.kv.has_style and style_table is not None and self.style_dim > 0)
+    self.use_style = self.has_style
+    # Territory only drives the XY pad when there is no style encoder.
+    self.use_terr_map = (self.num_territories > 0) and (not self.use_style)
+    self.use_map = self.use_terr_map or self.use_style  # 2 XY channels either way
+    # CFG: joint + a learned uncond null. Territory: the cfg-dropout row. Style: the zero-style null
+    # (style_dropout > 0). Both guide each codebook's logits toward (cond - uncond).
+    self._style_dropout = float(getattr(prior, '_style_dropout', 0.0))
+    self.use_cfg = bool(self.is_joint and (
+        (self.use_terr_map and int(self.kv.territory_weight.shape[0]) > self.num_territories)
+        or (self.use_style and self._style_dropout > 0.0)))
+    # nn~ inputs: [LFO(cond_dim) | (Style|Territory)X,Y | Temperature | (CFG) | Smoothing | Reseed].
     self.use_feat_smooth = int(n_feature_channels) > 0
     self.use_reseed = True  # beat-synced phrase re-anchor (rising-edge trigger)
     self.prior_in_channels = ((self.cond_dim if self.use_cond else 0)
-                              + (2 if self.use_terr_map else 0) + 1 + (1 if self.use_cfg else 0)
-                              + (1 if self.use_feat_smooth else 0) + (1 if self.use_reseed else 0)
-                              + (1 if self.use_lfo_cfg else 0))
-    self.terr_map_temp = float(terr_map_temp)  # blend sharpness of the 2-D territory map
+                              + (2 if self.use_map else 0) + 1 + (1 if self.use_cfg else 0)
+                              + (1 if self.use_feat_smooth else 0) + (1 if self.use_reseed else 0))
+    self.terr_map_temp = float(terr_map_temp)  # blend sharpness of the 2-D map
 
     with torch.no_grad():
       _dummy = torch.zeros(1, 1, self.num_codebooks, dtype=torch.long)
@@ -415,20 +461,51 @@ class PriorDiscreteWrapper(torch.nn.Module):
 
     # 2-D territory map: PCA of the learned territory embeddings (first num_territories rows;
     # the CFG null row is excluded) -> a 2-D coordinate per zone the user can navigate/blend.
+    def _pca2(M: torch.Tensor) -> torch.Tensor:
+      Mc = M - M.mean(0, keepdim=True)
+      try:
+        _, _, V = torch.pca_lowrank(Mc, q=2)
+        xy = Mc @ V[:, :2]
+      except Exception:
+        xy = Mc[:, :2]
+      return (xy / (xy.std(0, keepdim=True) + 1e-6)).contiguous()
+
     if self.use_terr_map:
       W = self.kv.territory_weight[:self.num_territories].float()        # [T, D]
-      Wc = W - W.mean(0, keepdim=True)
-      try:
-        _, _, V = torch.pca_lowrank(Wc, q=2)
-        xy = Wc @ V[:, :2]
-      except Exception:
-        xy = Wc[:, :2]
-      xy = xy / (xy.std(0, keepdim=True) + 1e-6)
-      self.register_buffer("territory_xy", xy.contiguous())             # [T, 2]
+      self.register_buffer("territory_xy", _pca2(W))                     # [T, 2]
       self.register_buffer("territory_table", W.contiguous())           # [T, D]
     else:
       self.register_buffer("territory_xy", torch.zeros(1, 2))
       self.register_buffer("territory_table", torch.zeros(1, self.d_model))
+
+    # STYLE 2-D map: PCA of the per-track style centroids (passed in at export time), normalised so
+    # each pad axis is 0..1 (corners literal). Fully dataset-agnostic: the [0,1] mapping uses the
+    # centroid min/max and the blend temperature is derived from the centroid spacing (below).
+    if self.use_style and style_table is not None:
+      St = style_table.float()                                          # [T, style_dim]
+      xy = _pca2(St)                                                    # [T, 2] PCA coords
+      mn = xy.min(0, keepdim=True).values
+      mx = xy.max(0, keepdim=True).values
+      xy01 = (xy - mn) / (mx - mn + 1e-6)                               # -> [0,1] per axis
+      # Auto blend temperature: 0.5 * mean nearest-neighbour distance^2 in the normalised map, so a
+      # pad point on a style snaps to it and the midpoint between two styles blends ~50/50 — invariant
+      # to how many tracks / how spread out they are (works for any future dataset).
+      if xy01.shape[0] > 1:
+        D = torch.cdist(xy01, xy01) + torch.eye(xy01.shape[0]) * 1e9
+        d_nn = float(D.min(1).values.mean())
+      else:
+        d_nn = 1.0
+      self._style_temp = float(max(1e-4, 0.5 * d_nn * d_nn))
+      self.register_buffer("style_xy", xy01.contiguous())               # [T, 2] in [0,1]
+      self.register_buffer("style_table", St.contiguous())             # [T, style_dim]
+    else:
+      self._style_temp = float(terr_map_temp)
+      self.register_buffer("style_xy", torch.zeros(1, 2))
+      self.register_buffer("style_table", torch.zeros(1, max(1, self.style_dim)))
+    # Reusable zero conditioning: disables territory (style models) and is the style-CFG uncond.
+    self.register_buffer("_zero_terr", torch.zeros(1, self.d_model))
+    self.register_buffer("_zero_style", torch.zeros(1, max(1, self.style_dim)))
+    self.register_buffer("_current_style", torch.zeros(1, max(1, self.style_dim)))
 
     # CFG: a second KV cache runs the UNCONDITIONED (null-territory) pass in lockstep, plus the
     # null territory embedding (the learned cfg-dropout row at index num_territories).
@@ -466,6 +543,26 @@ class PriorDiscreteWrapper(torch.nn.Module):
     w = torch.softmax(-d2 / self.terr_map_temp, dim=0)                  # [T]
     return (w.view(-1, 1) * self.territory_table).sum(0, keepdim=True)  # [1, D]
 
+  def _style_vec(self, xy: torch.Tensor) -> torch.Tensor:
+    """Blend style centroids by softmax over -distance^2 to the [0,1] 2-D style map. Returns [1, style_dim]."""
+    d2 = ((self.style_xy - xy.view(1, 2)) ** 2).sum(-1)                 # [T]
+    w = torch.softmax(-d2 / self._style_temp, dim=0)                    # [T] (auto-derived temp)
+    return (w.view(-1, 1) * self.style_table).sum(0, keepdim=True)      # [1, style_dim]
+
+  def _cond_terr(self, xy: torch.Tensor) -> Optional[torch.Tensor]:
+    """territory_vec for the conditioned pass: territory blend, or zeros (disabled) for style models."""
+    if self.use_terr_map:
+      return self._territory_vec(xy)
+    if self.use_style:
+      return self._zero_terr
+    return None
+
+  def _cond_style(self, xy: torch.Tensor) -> Optional[torch.Tensor]:
+    """style_vec for the conditioned pass (None for territory models)."""
+    if self.use_style:
+      return self._style_vec(xy)
+    return None
+
   def _sample_next(self, h_last: torch.Tensor, temp: float) -> torch.Tensor:
     """Sample one frame's N codebooks from time-context h_last [1, D]. Returns [1, N] long."""
     if self.is_joint:
@@ -484,12 +581,16 @@ class PriorDiscreteWrapper(torch.nn.Module):
   def reset_state(self):
     self.token_buffer.zero_()
     self.token_buffer[:, 0, :] = self.start_id
+    terr_c: Optional[torch.Tensor] = self._zero_terr if self.use_style else None
+    style_c: Optional[torch.Tensor] = self._current_style if self.use_style else None
     self.kv.reset()
-    h = self.kv.decode_context(self.token_buffer[:, :1, :], 0, None, None)  # [1,1,D]
+    h = self.kv.decode_context(self.token_buffer[:, :1, :], 0, None, terr_c, style_c)  # [1,1,D]
     self._pending_context.copy_(h[:, -1, :])
     if self.use_cfg:
+      terr_u: Optional[torch.Tensor] = self._zero_terr if self.use_style else self.null_terr_vec
+      style_u: Optional[torch.Tensor] = self._zero_style if self.use_style else None
       self.kv_uncond.reset()
-      hu = self.kv_uncond.decode_context(self.token_buffer[:, :1, :], 0, None, None)
+      hu = self.kv_uncond.decode_context(self.token_buffer[:, :1, :], 0, None, terr_u, style_u)
       self._pending_context_uncond.copy_(hu[:, -1, :])
     self._current_len.fill_(1)
     self._emit_idx.fill_(1)
@@ -504,12 +605,16 @@ class PriorDiscreteWrapper(torch.nn.Module):
     or the smoothing state. Conditioning (LFO/territory) keeps coming from the live inputs."""
     self.token_buffer.zero_()
     self.token_buffer[:, 0, :] = self.start_id
+    terr_c: Optional[torch.Tensor] = self._zero_terr if self.use_style else None
+    style_c: Optional[torch.Tensor] = self._current_style if self.use_style else None
     self.kv.reset()
-    h = self.kv.decode_context(self.token_buffer[:, :1, :], 0, None, None)
+    h = self.kv.decode_context(self.token_buffer[:, :1, :], 0, None, terr_c, style_c)
     self._pending_context.copy_(h[:, -1, :])
     if self.use_cfg:
+      terr_u: Optional[torch.Tensor] = self._zero_terr if self.use_style else self.null_terr_vec
+      style_u: Optional[torch.Tensor] = self._zero_style if self.use_style else None
       self.kv_uncond.reset()
-      hu = self.kv_uncond.decode_context(self.token_buffer[:, :1, :], 0, None, None)
+      hu = self.kv_uncond.decode_context(self.token_buffer[:, :1, :], 0, None, terr_u, style_u)
       self._pending_context_uncond.copy_(hu[:, -1, :])
     self._current_len.fill_(1)
     self._emit_idx.fill_(1)
@@ -526,8 +631,8 @@ class PriorDiscreteWrapper(torch.nn.Module):
     else:
       cond_in = torch.zeros(1, steps, 1)
     base = cd if self.use_cond else 0
-    if self.use_terr_map:
-      terr_xy_in = x[:1, base:base + 2, :]   # [1, 2, steps]
+    if self.use_map:
+      terr_xy_in = x[:1, base:base + 2, :]   # [1, 2, steps]  (Style XY for style models)
       temp_in = x[:1, base + 2, :]           # [1, steps]
       cfg_in = x[:1, base + 3, :] if self.use_cfg else torch.ones(1, steps)
       smooth_idx = base + 3 + (1 if self.use_cfg else 0)
@@ -573,7 +678,14 @@ class PriorDiscreteWrapper(torch.nn.Module):
           ti = int(min(steps - 1, frames_written))
           # Per-token conditioning sampled from the (slow) input controls at the current frame.
           cond_tok = cond_in[:, ti:ti + 1, :] if self.use_cond else None      # [1,1,cond_dim]
-          tvec = self._territory_vec(terr_xy_in[0, :, ti]) if self.use_terr_map else None  # [1,D]
+          xy = terr_xy_in[0, :, ti]
+          tvec = self._cond_terr(xy)            # territory blend, or zeros (style models), or None
+          svec = self._cond_style(xy)           # style blend (None for territory models)
+          if self.use_style and svec is not None:
+            self._current_style.copy_(svec)     # remember for reseed/reanchor START decode
+          # uncond conditioning: style-CFG zeros the style; territory-CFG uses the null row.
+          tvec_u: Optional[torch.Tensor] = self._zero_terr if self.use_style else self.null_terr_vec
+          svec_u: Optional[torch.Tensor] = self._zero_style if self.use_style else None
           temp = float(torch.clamp(temp_in[:, ti], min=1e-4).item())
           cfg = float(cfg_in[0, ti])
 
@@ -583,11 +695,11 @@ class PriorDiscreteWrapper(torch.nn.Module):
             current_len = self.init_primer_len
             emit_idx = emit_idx - shift
             self.kv.reset()
-            reprimed = self.kv.decode_context(self.token_buffer[:, :current_len, :], 0, None, tvec)
+            reprimed = self.kv.decode_context(self.token_buffer[:, :current_len, :], 0, None, tvec, svec)
             pending = reprimed[:, -1, :]
             if self.use_cfg:
               self.kv_uncond.reset()
-              reprimed_u = self.kv_uncond.decode_context(self.token_buffer[:, :current_len, :], 0, None, self.null_terr_vec)
+              reprimed_u = self.kv_uncond.decode_context(self.token_buffer[:, :current_len, :], 0, None, tvec_u, svec_u)
               pending_u = reprimed_u[:, -1, :]
 
           # Sample the next frame's codebooks (CFG-guided when enabled).
@@ -597,10 +709,10 @@ class PriorDiscreteWrapper(torch.nn.Module):
             samples = self._sample_next(pending, temp)                                   # [1, N]
           self.token_buffer[:, current_len:current_len + 1, :] = samples.unsqueeze(1)
           # Advance the cache(s) by feeding the just-sampled token with its conditioning.
-          advanced = self.kv.decode_context(samples.unsqueeze(1), 0, cond_tok, tvec)
+          advanced = self.kv.decode_context(samples.unsqueeze(1), 0, cond_tok, tvec, svec)
           pending = advanced[:, -1, :]
           if self.use_cfg:
-            advanced_u = self.kv_uncond.decode_context(samples.unsqueeze(1), 0, cond_tok, self.null_terr_vec)
+            advanced_u = self.kv_uncond.decode_context(samples.unsqueeze(1), 0, cond_tok, tvec_u, svec_u)
             pending_u = advanced_u[:, -1, :]
           current_len += 1
 
@@ -684,6 +796,7 @@ if __name__ == '__main__':
   parser.add_argument('--target_fs', type=float, default=None, help='Target sampling rate (defaults to the model fs from --config)')
   parser.add_argument('--prior_kind', default=None, choices=['mulaw', 'discrete'], help='Derived from cfg.prior.discrete.enabled if omitted')
   parser.add_argument('--compressor_checkpoint', type=str, default=None, help='LatentCompressor checkpoint (derived from --config for prior_kind=discrete)')
+  parser.add_argument('--prior_checkpoint', type=str, default=None, help='Explicit prior checkpoint (overrides best_acc auto-pick)')
   config = parser.parse_args()
 
   # Derive any unset options from the experiment config (explicit args win).
@@ -739,7 +852,9 @@ if __name__ == '__main__':
   if config.prior_directory is not None:
     prior_checkpoint_path = None
     if config.prior_kind == 'discrete':
-      if config.type == 'best':
+      if getattr(config, 'prior_checkpoint', None):
+        prior_checkpoint_path = config.prior_checkpoint
+      elif config.type == 'best':
         # Prefer best_acc checkpoint for discrete prior.
         for root, _, files in os.walk(config.prior_directory):
           for file in files:
@@ -803,10 +918,17 @@ if __name__ == '__main__':
   ddsp.streaming(True)
 
   if config.prior_kind == 'discrete' and prior_discrete is not None:
+    # Style models: precompute per-track style centroids -> the XY-pad style map.
+    style_table = None
+    if int(getattr(prior_discrete, '_style_dim', 0)) > 0:
+      style_table = _compute_style_table(prior_discrete, _cfg)
+      if style_table is not None:
+        print(f"Style XY map: {style_table.shape[0]} centroids x {style_table.shape[1]}-D")
     prior = PriorDiscreteWrapper(prior_discrete, compressor, resample_ratio=(config.target_fs / float(ddsp.fs)),
                                  n_feature_channels=feature_dim,
                                  terr_map_temp=float(_disc.get('terr_map_temp', 0.5)),
-                                 decode_lookahead=int(_disc.get('decode_lookahead', 2)))
+                                 decode_lookahead=int(_disc.get('decode_lookahead', 2)),
+                                 style_table=style_table)
 
   if format == 'onnx':
     ddsp.eval()

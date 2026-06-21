@@ -1,48 +1,75 @@
 # Discrete Codec Prior — Architecture, Control, Config & nn~
 
-A realtime generative system: a DDSP‑VAE synthesiser is driven by a **control trajectory** that is
+A realtime generative instrument: a DDSP‑VAE synthesiser is driven by a **control trajectory** that is
 **compressed to discrete tokens** by a grouped‑VQ codec, and an **autoregressive Transformer prior**
-generates those tokens. The prior is **conditioned** (slow "LFO" envelopes, selectable territories,
-classifier‑free guidance) and runs in realtime via a KV cache, exported to `nn~` for Max/MSP.
+generates those tokens. The prior is **steered by a learned *style* code** (an XY pad that morphs
+between the styles in the dataset), with optional slow **LFO** envelopes and **classifier‑free
+guidance**. It runs in realtime via a KV cache, exported to `nn~` for Max/MSP.
+
+> **Style is the headline control.** A `StyleEncoder` learns a global style vector per training window;
+> at play time you navigate those styles on a 2‑D pad. (An older *territory* label mechanism still
+> exists and is interchangeable, but style is the stronger, continuous steering — see §2.)
 
 ---
 
 ## 1. Architecture
 
+```mermaid
+flowchart TD
+    subgraph ANALYSIS["Analysis · train-time only"]
+        AU([audio]) --> ENC[DDSP.encoder]
+        AU --> FE[feature extract]
+        ENC --> Z["latents z0, z1"]
+        FE --> LCN["loudness, centroid"]
+        Z --> CTRL["control [loudness, centroid, z0, z1]<br/>[T, 4] @ 375 Hz"]
+        LCN --> CTRL
+        CTRL --> VQE["LatentCompressor.encode<br/>grouped VQ, ratio 16"]
+        VQE --> TOK["tokens [S, N=4] @ 23.4 Hz<br/>4 codebooks × 256"]
+    end
+
+    subgraph STY["StyleEncoder"]
+        SE["per-codebook embed (sum) ▶ 2×Conv1d<br/>▶ mean-pool over time ▶ tanh"] --> S(["style s [B, 64]<br/>global · LFO-complement"])
+    end
+    TOK -. "window tokens (train)" .-> SE
+    XY(["XY pad / reference clip<br/>(play-time)"]) -. "blend centroids" .-> S
+
+    subgraph PRIOR["PriorDiscrete · causal Transformer"]
+        EMB["per-codebook embed + START + positional enc"]
+        EMB --> INJ["+ style_proj(s)   ·additive, every position·<br/>+ cond_proj(LFO)   ·optional slow envelope·<br/>+ territory_embed   ·optional / legacy·"]
+        INJ --> LYR["4 × ( Transformer layer ▶ FiLM_i(s): scale·h + shift )"]
+        LYR --> H["time-context h"]
+        H --> DEPTH["joint depth head<br/>P(codebook i | earlier codebooks, h)"]
+    end
+    TOK --> EMB
+    S --> INJ
+    S --> LYR
+    DEPTH --> LOGITS["next-token logits"]
+    LOGITS -. "sample (inference)" .-> GTOK
+
+    subgraph SYNTH["Synthesis · infer-time"]
+        GTOK["generated tokens"] --> DEC["LatentCompressor.decode_codes"]
+        DEC --> CTRL2["control [T, 4]"]
+        CTRL2 --> DDEC["DDSP.decoder"]
+        DDEC --> SP["synth params"]
+        SP --> NB["BendableNoiseBandSynth"]
+        NB --> OUT([audio])
+    end
 ```
-                         ┌──────────────────────── TRAIN-TIME (analysis) ───────────────────────┐
-  audio ──▶ DDSP.encoder ──▶ latents z ─┐
-        └─▶ feature extract ─▶ loudness │   control [loudness, centroid, z0, z1]   (control rate)
-                              centroid ─┘            │  [T, 4] @ 375 Hz
-                                                     ▼
-                                       LatentCompressor.encode  (grouped VQ, ratio 16)
-                                                     │
-                                                     ▼
-                                          tokens  [S, N=4]   @ 23.4 Hz   (4 codebooks × 256)
-                                                     │
-                         ┌───────────────────── PriorDiscrete (causal Transformer) ──────────────┐
-                         │  per-codebook embed + START + positional enc  ──▶  + conditioning:     │
-                         │     • LFO/cond envelope (cond_proj, additive)                          │
-                         │     • territory embedding (additive)            ──▶ Transformer ──▶ h   │
-                         │  joint depth head: P(codebook i | codebooks <i, h)                      │
-                         └───────────────────────────────────────────────────────────────────────┘
-                                                     │  next-token logits
-                         └──────────────────────── INFER-TIME (synthesis) ──────────────────────┐
-  tokens ──▶ LatentCompressor.decode_codes ──▶ control [T,4] ──▶ DDSP.decoder ──▶ synth params
-                                                                          │
-                                                                          ▼
-                                                       BendableNoiseBandSynth ──▶ audio
-```
+
+At **play time** the style code `s` does **not** come from the encoder — it comes from the **XY pad**
+(a blend of the per‑track style centroids, §3) or from a reference clip. The encoder is only used at
+train time (and offline, to build the pad's centroids).
 
 **Stages**
 
-| Component | Role | Key params (morelli/harmsworth) |
+| Component | Role | Key params (current `mixed_rt16`) |
 |---|---|---|
-| `DDSP` (`ddsp/ddsp.py`) | VAE synth: encoder (audio→latents), decoder (control→synth params), `BendableNoiseBandSynth` | `resampling_factor=128` → control rate **375 Hz**; `decoder_temporal_stride=4` (linear upsampling) |
-| `LatentCompressor` (`ddsp/latent_compressor.py`) | grouped‑VQ codec over the control sequence; **codes‑only decode** (`use_skip_connections=false`) | `compression_ratio=16` → token rate **23.4 Hz**; `strides=[4,2,2]`, `num_codebooks=4`, `codebook_size=256` |
-| `PriorDiscrete` (`ddsp/prior/prior_discrete.py`) | causal Transformer over `[S, N=4]` tokens + conditioning + joint codebook head | `d_model = embedding_dim(64) × num_codebooks(4) = 256`, `nhead=8`, `num_layers=4`, `max_len=512` (~22 s) |
-| `KVCachedPrior` (`ddsp/prior/kv_infer.py`) | incremental, KV‑cached equivalent of `PriorDiscrete.forward` (batch=1, scriptable) | weights mapped from the trained prior; parity ≈ 1e‑5 |
-| `PriorDiscreteWrapper` (`cli/export.py`) | realtime nn~ wrapper: token generation loop, streaming compressor decode, control I/O | KV cache(s), `decode_lookahead`, smoothing + reseed |
+| `DDSP` (`ddsp/ddsp.py`) | VAE synth: encoder (audio→latents), decoder (control→synth params), `BendableNoiseBandSynth` | `resampling_factor=128` → control rate **375 Hz**; `decoder_temporal_stride=4` (linear upsampling, click‑fix) |
+| `LatentCompressor` (`ddsp/latent_compressor.py`) | grouped‑VQ codec over the control sequence; **codes‑only decode** (`use_skip_connections=false`) | `compression_ratio=16` → token rate **23.4 Hz** (≈43 ms/token); `strides=[4,2,2]`, `num_codebooks=4`, `codebook_size=256` |
+| `StyleEncoder` (`ddsp/prior/prior_discrete.py`) | window tokens `[B,S,N]` → global **style code** `[B, style_dim]`; mean‑pooled (no positions) so it carries texture/rhythm/grain, not content | per‑codebook embed (sum) → `2×Conv1d(k5)+ReLU` → mean‑pool → `Linear` → `tanh`; `style_dim=64` |
+| `PriorDiscrete` (`ddsp/prior/prior_discrete.py`) | causal Transformer over `[S,N=4]` tokens + style/LFO conditioning + joint codebook head | `d_model = embedding_dim(64) × num_codebooks(4) = 256`, `nhead=8`, `num_layers=4`, `max_len=256` (≈11 s @ 23.4 Hz) |
+| `KVCachedPrior` (`ddsp/prior/kv_infer.py`) | incremental, KV‑cached equivalent of `PriorDiscrete.forward` (batch=1, scriptable); carries the style proj + per‑layer FiLM | weights mapped from the trained prior; parity ≈ 1e‑5 (with style ≈ 2e‑5) |
+| `PriorDiscreteWrapper` (`cli/export.py`) | realtime nn~ wrapper: token loop, streaming compressor decode, **style XY‑pad map**, style‑CFG, smoothing, reseed | builds the `[0,1]` style map + auto blend temperature at export |
 
 **Control vector** = `[loudness, centroid, latent0, latent1]` (`num_controls = feature_dim + latent_size = 4`).
 
@@ -50,54 +77,96 @@ classifier‑free guidance) and runs in realtime via a KV cache, exported to `nn
 
 ## 2. Conditioning mechanisms
 
-All conditioning is **additive at the Transformer input** (kept separate from the codebook embeddings).
+### Style (the main steering) — *learned, continuous*
+A `StyleEncoder` maps each training window's tokens to a global **style code** `s ∈ ℝ⁶⁴` (tanh‑bounded,
+time‑pooled so it captures *style*, not content). `s` is injected into the prior **two ways**:
 
-- **LFO / cond envelope** — the control low‑passed (avg‑pool, `cond_smooth_frames=64` ≈ 170 ms) and
-  sampled at token rate; projected by `cond_proj` and added at every position. It is a slow,
-  per‑channel **scaffold** the prior learns to fill in around. At inference you draw these 4 curves.
-  - **`cond_dropout`**: zero the envelope for a fraction of training windows ⇒ the model learns
-    **freeform** (`cond=0`) *and* LFO‑driven generation. At inference an **LFO‑amount** `α` scales the
-    envelope (`α·LFO`): `1` = full follow, `0` = freeform, in‑between = blend. One model, switchable.
-    A *higher* `cond_dropout` (e.g. 0.5) also strengthens the LFO **grip**: it cleans the `cond=0`
-    baseline so LFO‑CFG (below) has more to push against.
-  - **LFO‑CFG** (`--lfo_cfg` in generation): guidance on the cond axis, `forward(cond=0) +
-    s·(forward(LFO) − forward(cond=0))`, so the LFO keeps its hold instead of dissipating as context
-    fills. Needs `cond_dropout`. Especially relevant for the coarse codec, where the strong vocab
-    attractor otherwise overrides the additive cond.
-- **Territory** — a per‑window label (`terr_by_track` = source track, or k‑means clusters) → an
-  additive `territory_embedding`. Exposed as a **2‑D map**: PCA of the embeddings places each zone at
-  an (x,y); the wrapper blends zones by softmax over −distance² (`terr_map_temp`).
-- **CFG (classifier‑free guidance)** — `cfg_dropout` trains a **null** territory row (index
-  `num_territories`). At inference, a second null pass runs in lockstep and logits are guided
-  `uncond + scale·(cond − uncond)` ⇒ a **territory‑contrast** knob (1 = off, >1 amplifies).
-- **Joint codebook head (WS4)** — instead of sampling the 4 codebooks independently (off‑manifold),
-  a small **depth head** predicts codebook `i` from the time‑context `h` and the already‑decoded
-  codebooks `<i` (parallel prefix‑sum in training, N sequential steps at inference). Keeps frames
-  on‑manifold.
+- **additive at the input** — `style_proj(s)` added to every position's embedding, and
+- **per‑layer FiLM** — after *each* Transformer layer, `h ← (1 + γ_i(s))·h + β_i(s)`.
+
+This dual, per‑layer injection (vs. a single weak additive bias) is what makes style **load‑bearing**
+during free‑running generation. Training levers:
+
+- **`style_dropout`** (0.2) — zero `s` for a fraction of windows ⇒ a learned **null** style, enabling
+  **style‑CFG** (below).
+- **`style_aux_weight`** (0.3) — an auxiliary head classifies the source track from `s`, forcing the
+  style space to be maximally **separable** (so pad zones are distinct).
+- **`context_dropout`** / **scheduled sampling** (`ss_iters`) — robustness knobs. `context_dropout`
+  forces reliance on `s` but *compresses dynamics if left on*, so the shipped model sets it **0** and
+  uses **iterated scheduled sampling** (`ss_iters=3`) instead, which exposes the model to its own
+  drifted context and keeps loudness dynamics from flattening at free‑run.
+
+Why style over the old territory labels: territory is a handful of discrete additive biases; style is
+a rich continuous code with per‑layer FiLM, so it actually *relocates* generation between styles
+(reach 12/12 tracks) instead of just tinting it.
+
+### LFO / cond envelope — *slow scaffold (optional)*
+The control low‑passed (`cond_smooth_frames=64`) at token rate, projected by `cond_proj` and added at
+every position — a slow per‑channel curve the prior fills in around. `cond_dropout` makes it
+**switchable** (feed `0` = freeform). On the current groovy codec the LFO is a gentle macro modulator
+(the beat is generated intrinsically); pushing it hard can loosen the groove. *Still wired in nn~.*
+
+### Classifier‑free guidance (CFG) — *contrast / commitment knob*
+With a learned null (`style_dropout>0` for style, or `cfg_dropout>0` for territory), a second pass runs
+in lockstep and logits are guided `uncond + scale·(cond − uncond)`. For style this is **Style‑CFG**:
+how hard to commit to the pad's style. See §3.1 for settings.
+
+### Joint codebook head (WS4) — *on‑manifold sampling*
+Instead of sampling the 4 codebooks independently (off‑manifold → clicks), a small **depth head**
+predicts codebook `i` from the time‑context `h` and the already‑decoded codebooks `<i` (parallel
+prefix‑sum in training, N sequential steps at inference).
+
+### ⚠️ Token rate is groove‑critical
+A beat at ~125 bpm is one event every ~0.48 s. At the **43 ms** codec that's ~11 tokens/beat — the
+prior can *generate* a stable groove. At the older **200 ms** codec it's only **2.4 tokens/beat**
+(below the token‑grid Nyquist), so a generative model can't hold the phase and the **groove "comes and
+goes."** The 200 ms codec reconstructs fine but cannot *generate* groove — use the **43 ms** codec
+(`strides=[4,2,2]`) for any rhythmic material. (Steady 4/4 grooves lock; very sparse/irregular grooves
+are still the hard case.)
 
 ---
 
 ## 3. Realtime control surface (nn~ `prior` method)
 
-Inputs are signal‑rate channels (a "knob" is just a signal). Full model = **10 inputs → 4 control out**:
+Inputs are signal‑rate channels (a "knob" is a signal). Current model = **10 inputs → 4 control out**:
 
 | # | label | meaning |
 |---|---|---|
-| 1–4 | `LFO 1..4` | control‑envelope scaffold (loudness, centroid, latent0, latent1). `0` everywhere = freeform |
-| 5–6 | `Territory X / Y` | normalised 2‑D map position; blends zones (≈ ±2 range, `(0,0)` = neutral) |
-| 7 | `Temperature` | sampling randomness (low = locked, high = varied) |
-| 8 | `CFG Strength` | territory contrast (1 = off, ~3 = strong; needs `cfg_dropout`) |
+| 1–4 | `LFO 1..4` | optional slow control‑envelope scaffold (loudness, centroid, latent0, latent1). `0` = off/freeform |
+| 5–6 | `Style X / Y` | **2‑D style pad, each axis `0…1`**. Blends the per‑track style centroids (corners = extreme styles) |
+| 7 | `Temperature` | sampling randomness (≈0.5 locked … 1.0 varied; ~0.6 default) |
+| 8 | `Style CFG` | how hard to commit to the pad's style (1 = raw … see §3.1) |
 | 9 | `Smoothing` | causal one‑pole LPF on **all** control trajectories (0 = off … ~0.95 = sluggish glide) |
 | 10 | `Reseed Trigger` | rising edge >0.5 re‑anchors the prior to a fresh phrase (beat‑sync restart) |
 
-Channels are added only when the model supports them (`cond_dim>0`, `num_territories>0`, CFG‑capable).
-Click fix is baked in (decoder linear upsampling), independent of these knobs.
+(If a model is exported with territory instead of style, channels 5–6 become `Territory X/Y` and 8 is
+`CFG Strength`; the layout is otherwise identical.)
+
+**The Style pad.** Built at export from the per‑track **style centroids** (mean of `StyleEncoder` over
+each track's windows), reduced to 2‑D by PCA and **normalised so each axis is `0…1`** (corners are
+literal). The runtime blend is `softmax(−dist² / style_temp)` over the centroids, with `style_temp`
+**auto‑derived** from the centroid spacing (`0.5 × mean‑nearest‑neighbour‑dist²`) — so it's correct
+for *any* dataset/track‑count with no manual tuning. For the current model the **X axis ≈ textures (0)
+→ beats (1)**; sweeping the pad between two points morphs continuously (e.g. beat → texture).
+
+### 3.1 CFG (and temperature) guidance
+Measured on the current groovy model — higher CFG sharpens style identity but **collapses diversity and
+loosens the groove**:
+
+| Style CFG | use |
+|---|---|
+| **1.0 – 1.5** | **default for rhythmic material.** Best groove; the pad still moves clearly between styles (the family axis is carried by pad position, not CFG). |
+| **~2.0** | most distinct *within‑family* style identity; groove a little looser. Good when you want styles to pop. |
+| **≥ 3.0** | exaggerated A/B style switching, but groove degrades / gets repetitive — **avoid for beats**; fine for textures (no groove to lose). |
+
+Start at **CFG 1.5, Temperature 0.6**. If you push CFG up, **raise Temperature** (~0.8) to claw back
+diversity (high‑CFG + low‑temp is the most collapse‑prone combo).
 
 ---
 
 ## 4. Config (`prior` section)
 
-Everything is config‑driven; nothing about conditioning is hardcoded. Canonical block:
+Everything is config‑driven. Canonical block (current style model):
 
 ```yaml
 prior:
@@ -106,54 +175,55 @@ prior:
     enabled: true
     compressor_ckpt: null         # auto-train/locate if null
 
-    # ── LFO / envelope conditioning ──
-    cond_envelope: true           # add the slow control-envelope scaffold
-    cond_smooth_frames: 64        # envelope low-pass window (control frames)
-    cond_dropout: 0.5             # >0 ⇒ switchable LFO/freeform; higher also strengthens LFO grip
-                                  #     (feed 0 to the LFO inputs = freeform; use --lfo_cfg for grip)
+    # ── style (the main steering) ──
+    style_dim: 64                 # >0 enables the StyleEncoder + XY pad
+    style_dropout: 0.2            # learned null style ⇒ Style-CFG capable
+    style_aux_weight: 0.3         # track-classification aux ⇒ separable style space
 
-    # ── territories ──
-    num_territories: 6            # 0 = no territory conditioning
-    terr_by_track: true           # territory = source track (else k-means)
-    terr_rich: true               # rich descriptor for clustering (when not by_track)
+    # ── generation robustness (keep dynamics, avoid drift) ──
+    context_dropout: 0.0          # 0 on the shipped model (>0 compresses loudness dynamics)
+    ss_prob: 0.3                  # iterated scheduled sampling: feed the model its own drifted context
+    ss_iters: 3                   # >1 = multi-step drift (fixes free-run dynamics flattening)
+    ss_anneal_steps: 4000
 
-    # ── guidance & sampling head ──
-    cfg_dropout: 0.15             # >0 ⇒ CFG-capable (trains a null territory)
-    joint_codebooks: true         # depth head (on-manifold sampling; kills codebook-independence clicks)
+    # ── LFO / envelope conditioning (optional scaffold) ──
+    cond_envelope: true
+    cond_smooth_frames: 64
+    cond_dropout: 0.5             # feed 0 to the LFO inputs = freeform
 
-    # ── nn~ wrapper (export-time, optional) ──
-    terr_map_temp: 0.5            # 2-D territory-map blend sharpness
+    # ── legacy territory + guidance + sampling head ──
+    num_territories: 12           # per-track labels (used for the style-aux classes; pad uses STYLE)
+    terr_by_track: true
+    cfg_dropout: 0.15             # CFG-capable (territory); style-CFG uses style_dropout
+    joint_codebooks: true         # depth head (on-manifold; kills codebook-independence clicks)
+
+    # ── nn~ wrapper (export-time) ──
+    terr_map_temp: 0.5            # legacy territory-map sharpness (style temp is auto-derived)
     decode_lookahead: 2           # streaming-decode lookahead (tokens of latency)
 
   model:                          # Transformer
-    embedding_dim: 64             # d_model = embedding_dim × num_codebooks
+    embedding_dim: 64             # d_model = embedding_dim × num_codebooks = 256
     nhead: 8
     num_layers: 4
     dim_feedforward: 1024
     dropout: 0.0
-    max_len: 512                  # ~22 s context (KV cache makes this realtime)
+    max_len: 256                  # ≈11 s context @ 23.4 Hz (KV cache makes this realtime)
 
   dataset:
-    stride_factor: 0.01
+    stride_factor: 0.004
     respect_boundaries: true      # windows never cross track boundaries
     in_memory: true
 
   training:
     batch_size: 64
-    max_epochs: 10000             # cap steps with PRIOR_MAX_STEPS env var
-    lr: 5e-4
+    max_epochs: 10000             # cap steps with PRIOR_MAX_STEPS env (≈50k is the sweet spot here;
+    lr: 5e-4                      #   ~100k overtrains and regresses groove/reach)
     val_fraction: 0.0
 ```
 
-The codec lives under the sibling `compressor:` section (`compression_ratio` derived from `strides`,
-`num_codebooks`, `codebook_size`, `hidden_dim`, `compressed_dim`, `use_skip_connections: false`).
-
-**Token time‑span.** `compression_ratio` (= product of `strides`) sets how much time one token spans:
-`ms/token = 1000 · compression_ratio / control_rate`. The default `[4,2,2]`=16 → ~43 ms. A **coarse
-codec** `[5,5,3]`=75 → ~200 ms captures whole drum hits as atomic vocabulary entries — cleaner,
-more "intentional" rhythm at the cost of timbral fidelity (bottlenecked by `compressed_dim`, not
-`codebook_size`). At the coarse rate the LFO becomes a slow **macro** control (the beat is the prior's
-job) and zones need CFG ~3–5 to separate; raise `max_len`'s stride so windows stay plentiful.
+The codec lives under the sibling `compressor:` section. **Use `strides=[4,2,2]` (=16, 43 ms/token)**
+for rhythmic material — see §2's token‑rate note. The coarse `[5,5,3]` (=75, 200 ms) variant captures
+whole drum hits as atomic vocabulary but **cannot generate a stable groove**.
 
 ---
 
@@ -163,24 +233,30 @@ job) and zones need CFG ~3–5 to separate; raise `max_len`'s stride so windows 
 # 1. synth (DDSP)            → training/synth/<name>
 python cli/train.py        --config-name <name>
 # 2. compressor + prior      → training/compressor|prior_discrete/<name>   (compressor auto-trains)
-python cli/train_prior.py  --config-name <name>            # PRIOR_MAX_STEPS=8000 to cap
-# 3. export to nn~           → models/<name>.ts
-python cli/export.py       --config <name> --type best
+PRIOR_MAX_STEPS=50000 python cli/train_prior.py --config-name <name>
+# 3. export to nn~           → models/<name>.ts   (computes the style centroids + XY map automatically)
+python cli/export.py       --config <name> --prior_checkpoint training/prior_discrete/<name>/<run>/<ckpt>
 ```
 
-The synth is dataset‑specific (it changes the latent space); the compressor and prior sit on top.
-Reusing an existing synth/compressor across prior variants is done with symlinks under `training/`.
+The synth is dataset‑specific (it defines the latent space); the compressor and prior sit on top.
+Reuse a synth/compressor across prior variants via symlinks under `training/` (e.g.
+`training/synth/<variant> → <base>`). `--prior_checkpoint` overrides the default `best_acc` auto‑pick
+(use it to ship the ~50k sweet‑spot checkpoint rather than an overtrained one).
 
 ### nn~ integration
-`cli/export.py` wraps the trained models in `ScriptedDDSP` (an `nn_tilde.Module`) exposing:
+`cli/export.py` wraps the models in `ScriptedDDSP` (an `nn_tilde.Module`) exposing:
 
 - **`encode`** — audio → control (analysis).
 - **`decode`** — control → audio (the synth; streaming).
 - **`prior`** — the 10‑channel control surface above → control, at the synth's resampling ratio.
 
-In Max, drive `prior` with your control signals and feed its output to `decode` (or patch a `prior →
-decode` chain). State (KV cache, token buffer, smoothing, reseed) persists across audio blocks; cold
-start is the learned START token.
+In Max, drive `prior` with your control signals and feed its output to `decode`. State (KV caches,
+token buffer, smoothing, reseed) persists across audio blocks; cold start is the learned START token.
+The **style XY‑pad map is baked into the exported model** (per‑track centroids + auto blend temp), so
+nothing about style needs to be configured in Max — just move X/Y in `0…1`.
+
+**Realtime.** The current model benches **≈11.8× realtime** for token generation (CPU, single thread)
+at 23.4 tok/s. The 200 ms codec has more headroom (≈4.7× fewer tokens) but cannot groove.
 
 ---
 
@@ -188,16 +264,8 @@ start is the learned START token.
 
 Instead of hand‑drawing the LFO, a small coarse model can **generate** it. `scripts/lfo_generator.py`
 k‑means‑quantises the fine prior's stored cond envelopes (`cond:{idx}`) and trains a 1‑codebook
-`PriorDiscrete` (territory‑conditioned, `cfg_dropout`) over those envelope tokens. It samples a
-plausible LFO trajectory (territory‑CFG via `--lfo_terr_cfg` makes per‑zone LFOs distinct) and feeds
-it to the fine prior as `cond` (with `--lfo_cfg` for grip):
-
-```bash
-python scripts/lfo_generator.py --reuse --territories 0 2 4 --lfo_cfg 5 --lfo_terr_cfg 4 --seconds 60
-```
-
-This is a working two‑level hierarchy (coarse plans the scaffold, fine renders it). The generated
-LFOs are realistic and zone‑distinct; how strongly they *shape* the output depends on **grip**
-(higher `cond_dropout` at training + `--lfo_cfg` at inference; multi‑layer cond injection is a future
-lever). No change to the fine prior or its nn~ export is needed — the integration point is the
-existing `cond` input.
+`PriorDiscrete` over those envelope tokens, then samples a plausible LFO trajectory and feeds it to the
+fine prior as `cond` (with `--lfo_cfg` for grip). A working two‑level hierarchy (coarse plans the
+scaffold, fine renders it); no change to the fine prior or its nn~ export is needed — the integration
+point is the existing `cond` input. On the 43 ms groovy model this is optional (groove is intrinsic);
+it's most useful for long‑form macro shaping.
