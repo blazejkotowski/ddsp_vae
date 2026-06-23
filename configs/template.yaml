@@ -141,9 +141,12 @@ prior:
     respect_boundaries: true     # never build windows that cross a track boundary
     in_memory: true              # cache token windows in RAM (faster; needs enough memory)
 
-  training:                      # prior training loop (cap steps with the PRIOR_MAX_STEPS env var;
-    batch_size: 64               #   ~50k steps is the sweet spot here — much more can overtrain and
-    max_epochs: 10000            #   regress groove/reach)
+  training:                      # prior training loop
+    batch_size: 64
+    max_epochs: 10000            # effectively unbounded; max_steps is the real stop
+    max_steps: 50000             # STOP here. ~50k is the sweet spot (more overtrains -> regresses
+                                 #   groove/reach). last.ckpt = this step = what export ships.
+                                 #   (PRIOR_MAX_STEPS env overrides for ad-hoc runs.)
     num_workers: 4
     lr: 5e-4
     force_restart: false

@@ -392,6 +392,32 @@ class PriorDiscrete(L.LightningModule):
 
     def configure_optimizers(self) -> Any:
         optimizer = torch.optim.Adam(self.parameters(), lr=self._lr)
+
+        # When a step budget is set (prior.training.max_steps), decay the LR on a STEP schedule:
+        # warmup -> cosine -> floor. The old epoch-based ReduceLROnPlateau(patience=20) could never
+        # fire on large corpora (e.g. 39-file mixed4 = ~18 epochs in 50k steps) so the LR stayed
+        # pinned at the base rate, too hot to converge (train acc stalled ~0.3). Step-based decay is
+        # independent of how big one epoch is, so it works for any corpus/stride.
+        max_steps = int(getattr(self.trainer, "max_steps", -1) or -1)
+        if max_steps and max_steps > 0:
+            warmup_steps = min(2000, max(1, max_steps // 20))
+            min_lr_ratio = 0.05  # floor at 5% of base LR so late steps still nudge
+
+            def lr_lambda(step: int) -> float:
+                if step < warmup_steps:
+                    return float(step + 1) / float(warmup_steps)
+                progress = float(step - warmup_steps) / float(max(1, max_steps - warmup_steps))
+                progress = min(1.0, progress)
+                cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+                return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+            lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {"scheduler": lr_scheduler, "interval": "step"},
+            }
+
+        # No step budget: fall back to the epoch-based plateau scheduler.
         lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",

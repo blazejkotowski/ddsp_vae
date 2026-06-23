@@ -54,7 +54,11 @@ class LibrosaFeatureExtractor(BaseExtractor):
       xi = x[i].detach().cpu().numpy()
       fi = self._feature_fn(y=xi, center=False)
       # fi shape usually [C, frames] or [1, frames]
-      fi = torch.tensor(fi, dtype=torch.float32)
+      # Force CPU: this one-time cache-build upsamples features to the FULL audio length, which for
+      # long concatenated files (e.g. hours of VCTK = ~700M samples) OOMs the GPU under train.py's
+      # global cuda default device. The result is cached, so CPU is correct (and downstream utils
+      # inherit this tensor's device, keeping the whole chain off-GPU).
+      fi = torch.tensor(fi, dtype=torch.float32, device='cpu')
       if fi.ndim == 1:
         fi = fi.unsqueeze(0)  # [1, frames]
       # interpolate to audio length along time

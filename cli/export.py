@@ -470,6 +470,22 @@ class PriorDiscreteWrapper(torch.nn.Module):
         xy = Mc[:, :2]
       return (xy / (xy.std(0, keepdim=True) + 1e-6)).contiguous()
 
+    def _tsne2(M: torch.Tensor) -> torch.Tensor:
+      # Even-coverage 2-D style layout. PCA only preserves the high-variance axes (~29% here), so
+      # low-variance styles land on top of a neighbour and collapse on the pad (~7/39 unreachable).
+      # t-SNE spreads every style into its own separable region (0 unreachable) at the cost of some
+      # global-distance fidelity — the right trade when the goal is "hit all styles" on a 2-D pad.
+      # Seeded -> deterministic export. Falls back to PCA for tiny corpora.
+      n = int(M.shape[0])
+      if n < 6:
+        return _pca2(M)
+      from sklearn.manifold import TSNE
+      perp = min(30.0, max(5.0, (n - 1) / 3.0))
+      emb = TSNE(n_components=2, perplexity=perp, init="pca", random_state=0).fit_transform(
+        M.detach().cpu().float().numpy())
+      xy = torch.from_numpy(emb).to(M.dtype)
+      return (xy / (xy.std(0, keepdim=True) + 1e-6)).contiguous()
+
     if self.use_terr_map:
       W = self.kv.territory_weight[:self.num_territories].float()        # [T, D]
       self.register_buffer("territory_xy", _pca2(W))                     # [T, 2]
@@ -478,12 +494,13 @@ class PriorDiscreteWrapper(torch.nn.Module):
       self.register_buffer("territory_xy", torch.zeros(1, 2))
       self.register_buffer("territory_table", torch.zeros(1, self.d_model))
 
-    # STYLE 2-D map: PCA of the per-track style centroids (passed in at export time), normalised so
-    # each pad axis is 0..1 (corners literal). Fully dataset-agnostic: the [0,1] mapping uses the
-    # centroid min/max and the blend temperature is derived from the centroid spacing (below).
+    # STYLE 2-D map: t-SNE of the per-track style centroids (passed in at export time), normalised so
+    # each pad axis is 0..1 (corners literal). t-SNE (not PCA) so every style gets a separable pad
+    # region; the [0,1] mapping uses the layout min/max and the blend temperature is derived from the
+    # centroid spacing (below) — dataset-agnostic.
     if self.use_style and style_table is not None:
       St = style_table.float()                                          # [T, style_dim]
-      xy = _pca2(St)                                                    # [T, 2] PCA coords
+      xy = _tsne2(St)                                                   # [T, 2] even-coverage layout
       mn = xy.min(0, keepdim=True).values
       mx = xy.max(0, keepdim=True).values
       xy01 = (xy - mn) / (mx - mn + 1e-6)                               # -> [0,1] per axis
@@ -852,18 +869,14 @@ if __name__ == '__main__':
   if config.prior_directory is not None:
     prior_checkpoint_path = None
     if config.prior_kind == 'discrete':
+      # Default to last.ckpt: with prior.training.max_steps set, training stops at the chosen step so
+      # last.ckpt IS the deployable model (best_acc/best_loss monitor a tiny noisy val set). Override
+      # with --prior_checkpoint to ship a specific step.
       if getattr(config, 'prior_checkpoint', None):
         prior_checkpoint_path = config.prior_checkpoint
-      elif config.type == 'best':
-        # Prefer best_acc checkpoint for discrete prior.
-        for root, _, files in os.walk(config.prior_directory):
-          for file in files:
-            if 'best_acc' in file and file.endswith('.ckpt'):
-              p = os.path.join(root, file)
-              if prior_checkpoint_path is None or os.path.getctime(p) > os.path.getctime(prior_checkpoint_path):
-                prior_checkpoint_path = p
-      if prior_checkpoint_path is None:
-        prior_checkpoint_path = find_checkpoint(config.prior_directory, typ=config.type)
+      else:
+        prior_checkpoint_path = (find_checkpoint(config.prior_directory, typ='last', return_none=True)
+                                 or find_checkpoint(config.prior_directory, typ=config.type))
       print("exporting discrete prior model from checkpoint: ", prior_checkpoint_path)
 
       if config.compressor_checkpoint is None:

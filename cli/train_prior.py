@@ -377,13 +377,18 @@ def _train_discrete(cfg: DictConfig, control_space, synth_configs, in_memory: bo
   else:
     print("Force restart requested; starting from scratch.")
 
-  _max_steps = int(os.environ.get('PRIOR_MAX_STEPS', '-1'))
+  # Step cap from config (prior.training.max_steps; -1 = uncapped); PRIOR_MAX_STEPS env overrides.
+  _max_steps = int(os.environ.get('PRIOR_MAX_STEPS', str(int(cfg.prior.training.get('max_steps', -1)))))
   trainer = L.Trainer(
     max_epochs=cfg.prior.training.get('max_epochs', 10),
     max_steps=_max_steps,
     accelerator='gpu' if device == 'cuda' else 'cpu',
     devices=1,
     log_every_n_steps=10,
+    # Clip global grad norm: the step-based cosine LR (unlike the old plateau scheduler) does NOT
+    # back off on a loss spike, so a single high-variance batch can blow up a gradient and collapse
+    # the model to ~random with no recovery (seen on VCTK speech at step ~19k). Clipping prevents it.
+    gradient_clip_val=float(cfg.prior.training.get('gradient_clip', 1.0)),
     callbacks=callbacks,
     logger=logger,
     default_root_dir=output_dir,
