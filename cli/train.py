@@ -112,6 +112,9 @@ def main(cfg: DictConfig) -> None:
     adv_gen_weight=float(cfg.adversarial.weights.gen),
     adv_disc_weight=float(cfg.adversarial.weights.disc),
     adv_fm_weight=float(cfg.adversarial.weights.fm),
+    adv_ndf=int(getattr(cfg.adversarial, 'ndf', 4)),
+    adv_disc_update_every=int(getattr(cfg.adversarial, 'disc_update_every', 5)),
+    ddsp_min_lr=float(getattr(cfg.model, 'min_lr', 0.0)),
     config_name=active_config_name,
   )
 

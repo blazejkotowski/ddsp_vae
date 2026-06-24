@@ -59,6 +59,9 @@ model:
   decoder_temporal_stride: 4     # decoder runs at control_rate/stride then LINEAR-upsamples
                                  #   (linear, not zero-order-hold — this is the click fix; keep ≥2)
   learning_rate: 1e-4
+  min_lr: 0.0                    # generator LR floor. Set >0 (e.g. 5e-5) when using adversarial: the
+                                 #   plateau scheduler otherwise decays LR to ~1e-8 by convergence and
+                                 #   the generator is frozen once the adversarial phase starts.
   plateau_patience: 15000        # LR plateau scheduler patience (steps)
   capacity: 24                   # VAE bottleneck capacity (latent expressivity)
   beta:                          # β-VAE KLD warmup (regularises the latent space)
@@ -74,8 +77,13 @@ losses:                          # SYNTH reconstruction loss (registry-driven; M
 
 adversarial:                     # optional GAN fine-tuning of the synth (off by default)
   enabled: false
-  weights: { gen: 0.01, disc: 0.01, fm: 0.01 }
-  schedule: { g_start_epoch: 50, d_start_epoch: 60 }
+  ndf: 16                        # discriminator first-layer filters; a real critic (4 is too weak to push G)
+  disc_update_every: 1           # train D every Nth batch (1 = every step, keeps D competitive with G)
+  weights: { gen: 0.1, disc: 1.0, fm: 1.0 }   # feature-matching (fm) is the stable, reconstruction-like
+                                              #   workhorse; keep the hinge (gen) small so recons dominates
+  schedule: { d_start_epoch: 70, g_start_epoch: 78 }   # D must warm up BEFORE G (a generator chasing an
+                                              #   untrained D only hurts); both start after recons converges.
+                                              #   Also set model.min_lr (e.g. 5e-5) so G isn't frozen.
 
 trainer:                         # SYNTH training loop
   batch_size: 6

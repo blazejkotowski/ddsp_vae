@@ -69,6 +69,9 @@ class DDSP(L.LightningModule):
                adv_gen_weight: float = 1.0,
                adv_disc_weight: float = 1.0,
                adv_fm_weight: float = 1.0,
+               adv_ndf: int = 4,
+               adv_disc_update_every: int = 5,
+               ddsp_min_lr: float = 0.0,
                config_name: str | None = None,
                device: str = 'cuda'):
     super().__init__()
@@ -106,6 +109,8 @@ class DDSP(L.LightningModule):
     self._adv_gen_weight = float(adv_gen_weight)
     self._adv_disc_weight = float(adv_disc_weight)
     self._adv_fm_weight = float(adv_fm_weight)
+    self._adv_disc_update_every = max(1, int(adv_disc_update_every))
+    self._ddsp_min_lr = float(ddsp_min_lr)
 
     # self.synths = synths
     # self.synths = torch.nn.ModuleList([builder() for builder in self._synth_builders])
@@ -190,7 +195,7 @@ class DDSP(L.LightningModule):
         self._loss_items.append((loss, weight))
 
     self._disc_num_D = 3 # number of discriminators at different scales
-    self._disc_ndf = 4 # number of filters in the first layer of the discriminator
+    self._disc_ndf = int(adv_ndf) # number of filters in the first layer of the discriminator
     self._disc_n_layers = 3 # number of layers in each discriminator
     self._disc_downsample_factor = 4 # downsampling factor between discriminators
     self._disc_feature_weight = 1.0 # weight for the feature matching loss
@@ -474,7 +479,7 @@ class DDSP(L.LightningModule):
         ld = ld + F.relu(1 - out[-1]).mean() # for a good disceriminator, D(real) should be positive, so the loss part here should be small
       adv_d = ld * self._adv_disc_weight
 
-      if batch_idx % 5 == 0:
+      if batch_idx % self._adv_disc_update_every == 0:
         opt_disc.zero_grad(set_to_none=True)
         self.manual_backward(adv_d)
         self.clip_gradients(opt_disc, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
@@ -578,7 +583,9 @@ class DDSP(L.LightningModule):
     disc_params = list(self._discriminator.parameters())
 
     opt_ddsp = torch.optim.Adam(ddsp_params, lr=self._learning_rate)
-    sched_ddsp = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_ddsp, mode='min', factor=0.1, patience=self._plateau_patience, threshold=1e-3)
+    # min_lr floors the generator LR so an adversarial phase that starts AFTER recons convergence
+    # still has a usable LR to fine-tune with (without a floor it decays to ~1e-8 and G can't move).
+    sched_ddsp = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_ddsp, mode='min', factor=0.1, patience=self._plateau_patience, threshold=1e-3, min_lr=self._ddsp_min_lr)
 
     opt_disc = torch.optim.Adam(disc_params, lr=self._learning_rate)
     sched_disc = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_disc, mode='min', factor=0.1, patience=int(self._plateau_patience*10), threshold=1e-3)
