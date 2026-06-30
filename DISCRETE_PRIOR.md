@@ -100,6 +100,28 @@ Why style over the old territory labels: territory is a handful of discrete addi
 a rich continuous code with per‑layer FiLM, so it actually *relocates* generation between styles
 (reach 12/12 tracks) instead of just tinting it.
 
+#### How territories get assigned (`num_territories`)
+Territory labels are assigned **at token‑cache build time** (one integer label per token window), and
+how `num_territories` is interpreted depends on `terr_by_track`:
+
+- **`terr_by_track: true` — territory = source track.** Every window inherits the index of the source
+  file/segment it came from, so each track becomes its own maximally‑distinct zone. The **actual**
+  territory count is the number of source tracks (`max(track_idx)+1`), *not* the config number —
+  `num_territories` here just needs to be ≥ the track count (it sizes the model's territory embedding /
+  style‑aux classes). This is the mode the shipped model uses (`num_territories: 12`, 12 tracks).
+- **`terr_by_track: false` (and `num_territories > 0`) — territory = K‑means cluster.** For each window
+  a control‑statistics **descriptor** is computed and all windows are clustered with KMeans into
+  exactly `K = min(num_territories, num_windows)` zones; the cluster id is the label. So here
+  `num_territories` *directly* sets the number of territories. The descriptor is the mean + std of the
+  control vector (loudness, centroid, latents) over the window; with **`terr_rich: true`** it is
+  extended with mean |velocity|, range, and the loudness‑channel low‑freq FFT (a groove/tempo
+  signature) for more perceptually distinct zones.
+- **`num_territories: 0`** disables territory conditioning entirely (no labels written).
+
+The labels are stored in the cache (`terr:*` keys) and surfaced via `dataset.num_territories`, which is
+what actually sizes the embedding at train time — so the effective count is whatever the build printed
+(`[tokens] K territories, window counts: …`), which for `terr_by_track` may differ from the config.
+
 ### LFO / cond envelope — *slow scaffold (optional)*
 The control low‑passed (`cond_smooth_frames=64`) at token rate, projected by `cond_proj` and added at
 every position — a slow per‑channel curve the prior fills in around. `cond_dropout` makes it
