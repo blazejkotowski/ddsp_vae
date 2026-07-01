@@ -45,6 +45,7 @@ model:
         n_filters: 512
   latent_smoothing_kernel: 65
   decoder_gru_layers: 2
+  decoder_temporal_stride: 1
   learning_rate: 1e-4
   plateau_patience: 100000
   capacity: 32
@@ -83,7 +84,7 @@ trainer:
   force_restart: false
 
 prior:
-  enabled: false
+  enabled: true
 
   # Discrete-token prior over LatentCompressor VQ indices. Disabled by default;
   # when disabled the continuous mu-law Prior above is trained unchanged.

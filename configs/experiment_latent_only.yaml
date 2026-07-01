@@ -60,7 +60,7 @@ trainer:
   force_restart: false
 
 prior:
-  enabled: false
+  enabled: true
 
   # Discrete-token prior over LatentCompressor VQ indices. Disabled by default;
   # when disabled the continuous mu-law Prior above is trained unchanged.
