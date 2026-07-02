@@ -290,7 +290,11 @@ class NoiseBandSynth(BaseSynth):
     return "NoiseBandSynth"
 
 
-  def forward(self, amplitudes: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0) -> torch.Tensor:
+  def forward(self, amplitudes: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0,
+              limit_mode: int = 0, spectral_roll: float = 0.0, spectral_stretch: float = 0.0,
+              spectral_warp: float = 0.0) -> torch.Tensor:
+    # limit_mode / spectral_* accepted for a uniform _synthesize call signature; only
+    # BendableNoiseBandSynth acts on them.
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
@@ -415,6 +419,11 @@ class BendableNoiseBandSynth(BaseSynth):
       device=device
     )
 
+    # Band-amplitude vector length (== n_filters == sine bank size). Used by the control-rate
+    # spectral transforms (bends + limiting) in _apply_spectral.
+    self._n_bands = self._sine_synth._n_sines
+    self.register_buffer('_band_idx', torch.arange(self._n_bands).float())
+
   @property
   def n_params(self):
     return self._noiseband_synth.n_params
@@ -433,10 +442,105 @@ class BendableNoiseBandSynth(BaseSynth):
     self._sine_synth.streaming = value
     self._noiseband_synth.streaming = value
 
-  def forward(self, parameters: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0):
+  def _gather_interp(self, x: torch.Tensor, src: torch.Tensor, wrap: bool) -> torch.Tensor:
+    """
+    Resample the band-amplitude vector: output band i takes the (linearly interpolated) value at
+    source position src[i]. `wrap` = circular (roll) vs clamped (stretch/warp). x: [B, N, T].
+    """
+    N = x.shape[1]
+    if wrap:
+      s = src % float(N)
+      i0 = torch.floor(s)
+      frac = (s - i0).view(1, N, 1)
+      i0l = i0.long() % N
+      i1l = (i0l + 1) % N
+    else:
+      s = torch.clamp(src, 0.0, float(N - 1))
+      i0 = torch.floor(s)
+      frac = (s - i0).view(1, N, 1)
+      i0l = i0.long()
+      i1l = torch.clamp(i0l + 1, 0, N - 1)
+    a0 = x.index_select(1, i0l)
+    a1 = x.index_select(1, i1l)
+    return a0 + (a1 - a0) * frac
+
+  def _limit_mask(self, x: torch.Tensor, limit_components: float, limit_mode: int) -> torch.Tensor:
+    """
+    Control-rate keep-mask over bands. Amount -> keep count k; mode -> which bands survive. Returned
+    mask multiplies the amplitudes and is upsampled downstream, so on/off becomes a smooth fade.
+    """
+    N = x.shape[1]
+    k = int(N * (1.0 - limit_components) + 0.5)
+    if k < 1:
+      k = 1
+    if k >= N:
+      return torch.ones(1, 1, 1, device=x.device, dtype=x.dtype)
+
+    if limit_mode == 1:      # density: evenly index-spaced (perceptually even across Bark)
+      idx = torch.linspace(0.0, float(N - 1), k, device=x.device).round().long()
+      m = torch.zeros(N, device=x.device, dtype=x.dtype).index_fill(0, idx, 1.0)
+      return m.view(1, N, 1)
+    elif limit_mode == 2:    # lower: spectral low-pass
+      m = torch.zeros(1, N, 1, device=x.device, dtype=x.dtype)
+      m[:, :k, :] = 1.0
+      return m
+    elif limit_mode == 3:    # higher: spectral high-pass
+      m = torch.zeros(1, N, 1, device=x.device, dtype=x.dtype)
+      m[:, N - k:, :] = 1.0
+      return m
+    elif limit_mode == 4:    # peaks: keep k most prominent local maxima
+      a = x.abs()
+      left = torch.zeros_like(a); right = torch.zeros_like(a)
+      left[:, 1:, :] = a[:, :-1, :]
+      right[:, :-1, :] = a[:, 1:, :]
+      is_peak = (a >= left) & (a >= right)
+      score = torch.where(is_peak, a, torch.full_like(a, -1.0))
+      _, idx = torch.topk(score, k, dim=1)
+      m = torch.zeros_like(a)
+      m.scatter_(1, idx, 1.0)
+      return m * is_peak.to(x.dtype)   # drop filler when fewer than k peaks exist
+    elif limit_mode == 5:    # stochastic: random ~k bands per frame (grainy)
+      keep_prob = float(k) / float(N)
+      return (torch.rand(x.shape[0], N, x.shape[2], device=x.device) < keep_prob).to(x.dtype)
+    else:                    # 0 loudest: top-k by magnitude
+      _, idx = torch.topk(x.abs(), k, dim=1)
+      m = torch.zeros_like(x)
+      m.scatter_(1, idx, 1.0)
+      return m
+
+  def _apply_spectral(self, x: torch.Tensor, spectral_roll: float, spectral_stretch: float,
+                      spectral_warp: float, limit_components: float, limit_mode: int) -> torch.Tensor:
+    """
+    Control-rate spectral transforms on the band-amplitude vector [B, N, T]: bends (reshape the
+    spectrum) then limiting (thin it). All no-ops at their neutral values, so the default path is
+    unchanged. Doing this at control rate lets the downstream linear upsampling smooth every change.
+    """
+    idx = self._band_idx
+    N = x.shape[1]
+    # stretch: i -> i/scale (scale>1 spreads energy toward highs); then warp: smooth energy-
+    # conserving skew; then roll: circular shift with wrap. Each guarded to its neutral value.
+    if spectral_stretch != 0.0:
+      scale = 2.0 ** max(-2.0, min(spectral_stretch, 2.0))
+      x = self._gather_interp(x, idx / scale, False)
+    if spectral_warp != 0.0:
+      gamma = 2.0 ** max(-2.0, min(spectral_warp, 2.0))
+      x = self._gather_interp(x, float(N) * torch.pow(idx / float(N), 1.0 / gamma), False)
+    if spectral_roll != 0.0:
+      roll = max(0.0, min(spectral_roll, 1.0))
+      x = self._gather_interp(x, idx - roll * float(N), True)
+    if limit_components > 0.0:
+      x = x * self._limit_mask(x, limit_components, limit_mode)
+    return x
+
+  def forward(self, parameters: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0,
+              limit_mode: int = 0, spectral_roll: float = 0.0, spectral_stretch: float = 0.0,
+              spectral_warp: float = 0.0):
     """
     Waveshaping factor controls the amount of interpolation between noisebands and sinewaves when in the range [0, 0.5].
     On the other hand, in the rangee [0.5, 1], it controls the amount of waveshaping applied to the sinewaves.
+
+    limit_mode selects the partial-limiting strategy (0 loudest, 1 density, 2 lower, 3 higher,
+    4 peaks, 5 stochastic). spectral_roll/stretch/warp are spectral bend amounts (0 = neutral).
     """
     # waveshaping_factor = kwargs.pop('waveshaping', 0.0)
     # Clamp waveshaping factor to [0, 1]
@@ -448,22 +552,28 @@ class BendableNoiseBandSynth(BaseSynth):
       interpolation = 1.0
       waveshaping_factor = (waveshaping_factor - 0.5) * 2
 
-    # Prepend the shift ratios to the existing parameters
-    sine_parameters = torch.cat((torch.ones_like(parameters), parameters), dim=1)
+    # Spectral bends + partial limiting, all at control rate on the band-amplitude vector, so the
+    # synths' linear upsampling ramps any band on/off into a smooth fade (no clicks). Limiting is
+    # therefore applied here and the sub-synths are called with limit_components=0.
+    parameters = self._apply_spectral(parameters, spectral_roll, spectral_stretch, spectral_warp,
+                                      limit_components, limit_mode)
+
+    # No pitch-bend here (shift ratios are implicitly 1), so drive the sine synth's fixed-frequency
+    # fast path directly with the band amplitudes instead of building a [B, 2N, T] shift+amp tensor.
 
     # Interpolation = 0 -> only noisebands
     # Interpolation = 1 -> only sinewaves
     if interpolation == 0.0:
-      noise_signal = self._noiseband_synth(parameters, limit_components=limit_components)
+      noise_signal = self._noiseband_synth(parameters, limit_components=0.0)
       return noise_signal
 
     elif interpolation == 1.0:
-      sine_signal = self._sine_synth(sine_parameters, limit_components=limit_components, waveshaping_factor=waveshaping_factor)
+      sine_signal = self._sine_synth.forward_bank(parameters, limit_components=0.0, waveshaping_factor=waveshaping_factor)
       return sine_signal
 
     else:
-      noise_signal = self._noiseband_synth(parameters, limit_components=limit_components)
-      sine_signal = self._sine_synth(sine_parameters, limit_components=limit_components, waveshaping_factor=waveshaping_factor)
+      noise_signal = self._noiseband_synth(parameters, limit_components=0.0)
+      sine_signal = self._sine_synth.forward_bank(parameters, limit_components=0.0, waveshaping_factor=waveshaping_factor)
       return (1-interpolation)*noise_signal + interpolation*sine_signal
 
 
@@ -510,6 +620,16 @@ class SubbandSineSynth(BaseSynth):
     shift_ranges = torch.cat((shift_ranges, shift_ranges[-1].view(1)))
     self.register_buffer('_shift_ranges', shift_ranges)
 
+    # --- Fixed-frequency fast-path caches (used by forward_bank) ---------------------------------
+    # When there is no pitch-bend the per-band frequency is constant, so ω = 2πf/fs, the nyquist
+    # gate and the phase ramp are all time-invariant and can be precomputed / cached.
+    self.register_buffer('_omega', (self._base_freqs * 2 * math.pi / self._fs).view(1, -1, 1))
+    self.register_buffer('_nyquist_mask', (self._base_freqs < self._fs / 2).float().view(1, -1, 1) + 1e-4)
+    self.register_buffer('_phase_ramp', torch.empty(0))  # ω·t, lazily built per block length
+    self._ramp_len: int = -1
+    self._ws_factor: float = -1.0   # cached waveshaper knob + its analytic RMS scalar
+    self._ws_scale: float = 1.0
+
   @property
   def n_params(self):
     return 2*self._n_sines
@@ -519,7 +639,10 @@ class SubbandSineSynth(BaseSynth):
     return "SubbandSineSynth"
 
 
-  def forward(self, parameters: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0):
+  def forward(self, parameters: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0,
+              limit_mode: int = 0, spectral_roll: float = 0.0, spectral_stretch: float = 0.0,
+              spectral_warp: float = 0.0):
+    # limit_mode / spectral_* accepted for a uniform _synthesize call signature; unused here.
     """
     Generates a mixture of sinewaves with the given frequencies and amplitudes per sample.
 
@@ -615,40 +738,104 @@ class SubbandSineSynth(BaseSynth):
     return signal
 
 
+  def _ws_analytic_scale(self, factor: float, drive_max: float = 20.0) -> float:
+    """
+    RMS-compensation scalar for the tanh waveshaper. The shaper acts on unit sines, so the
+    compensation is identical across all components — it is the ratio of the unit-sine RMS to
+    the shaped-waveform RMS over one period. Computed once from a dense reference period and
+    cached (recomputed only when the knob moves), replacing the old per-band reduction over the
+    full [B, N, T] tensor (whose per-band variation was finite-window/near-nyquist noise).
+    """
+    if factor != self._ws_factor:
+      m = max(0.0, min(factor, 1.0))
+      g = (m / (1.0 - m + 1e-6)) * drive_max
+      s = torch.sin(torch.linspace(0.0, 2.0 * math.pi, 8192))
+      w = (1.0 - m) * s + m * torch.tanh(g * s)
+      self._ws_scale = float(torch.sqrt(torch.mean(s * s)) / torch.sqrt(torch.mean(w * w) + 1e-12))
+      self._ws_factor = factor
+    return self._ws_scale
+
   def _waveshape_tanh(self, x: torch.Tensor, factor: float, drive_max: float = 20.0) -> torch.Tensor:
     """
-    Per-component tanh waveshaper with RMS compensation and dry/wet morph.
+    Per-component tanh waveshaper with (scalar) RMS compensation and dry/wet morph.
 
     Args:
-      - x: torch.Tensor [B, N, T] or broadcastable; expected in ~[-1,1] (e.g., torch.sin(phases))
+      - x: torch.Tensor [B, N, T]; expected to be unit sines (torch.sin(phases))
       - factor: float in [0,1], 0 = bypass, 1 = strong saturation
       - drive_max: maximum drive used when factor=1
-
-    Returns:
-      - y: torch.Tensor, same shape as x
     """
     if factor <= 0.0:
       return x
-
-    m = torch.clamp(torch.as_tensor(float(factor), device=x.device, dtype=x.dtype), 0.0, 1.0)
-    # Map morph -> drive; steep near 1 for squarer corners
+    m = max(0.0, min(factor, 1.0))
     g = (m / (1.0 - m + 1e-6)) * drive_max
+    return torch.lerp(x, torch.tanh(g * x), m) * self._ws_analytic_scale(m, drive_max)
 
-    # Dry/wet blend around tanh saturator
-    y = (1.0 - m) * x + m * torch.tanh(g * x)
+  def _get_ramp(self, length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """
+    Cached fixed-frequency phase ramp (ω·t mod 2π), t = 1..L; rebuilt only when the block length L
+    changes. Pre-wrapped so forward_bank can add the per-band offset and feed torch.sin directly
+    without a full-size modulo (args stay in [0, 4π), where sin is exact).
+    """
+    if self._ramp_len != length or self._phase_ramp.numel() == 0:
+      t = torch.arange(length, device=device, dtype=dtype).view(1, 1, length) + 1.0
+      self._phase_ramp = (self._omega.to(dtype) * t) % (2.0 * math.pi)
+      self._ramp_len = length
+    return self._phase_ramp
 
-    # --- RMS compensation (per component over time) ---
-    eps = 1e-12
-    # Base RMS of the input unit sine (computed from x to also handle masked/zero components)
-    x_rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps)
-    y_rms = torch.sqrt(torch.mean(y * y, dim=-1, keepdim=True) + eps)
+  def forward_bank(self, amplitudes: torch.Tensor, limit_components: float = 0.0, waveshaping_factor: float = 0.0) -> torch.Tensor:
+    """
+    Fixed-frequency oscillator bank. Numerically equivalent to forward() when there is no
+    pitch-bend (shift ratios == 1), but much cheaper: frequencies == base_freqs are constant, so
+    the phase ramp and nyquist gate are precomputed and the tanh RMS compensation is a scalar.
 
-    # Avoid 0/0 for fully muted components
-    safe_scale = torch.where(y_rms > 1e-12, x_rms / y_rms, torch.ones_like(y_rms))
-    y = y * safe_scale
-    # --------------------------------------------------
+    Args:
+      - amplitudes: torch.Tensor[B, n_sines, T_ctrl], per-band amplitudes at control rate.
+      - limit_components / waveshaping_factor: as in forward().
+    """
+    batch_size = amplitudes.shape[0]
+    if self.streaming and (not self._phases_initialized or self._phases.shape[0] != batch_size):
+      self._phases = torch.zeros(batch_size, self._n_sines)
+      self._phases_initialized = True
 
-    return y
+    ws = max(0.0, min(waveshaping_factor, 1.0))
+
+    # Fold the (time-invariant) nyquist gate and the waveshaper's scalar into the control-rate
+    # amplitudes. Both commute with linear upsampling and per-band constant scaling, so this is
+    # numerically equivalent yet removes two full-size (audio-rate) passes.
+    amplitudes = amplitudes * self._nyquist_mask
+    if ws > 0.0:
+      amplitudes = amplitudes * self._ws_analytic_scale(ws)
+
+    amplitudes = F.interpolate(amplitudes, scale_factor=float(self._resampling_factor), mode='linear')
+    length = amplitudes.shape[-1]
+
+    # ramp is pre-wrapped to [0, 2π) by _get_ramp; adding the per-band offset (also in [0, 2π))
+    # keeps phases in [0, 4π), where torch.sin is exact — so we skip the full-size modulo (a
+    # ~55ms/block pass) and only re-wrap the single carried-over column [B, N] for the next block.
+    ramp = self._get_ramp(length, amplitudes.device, amplitudes.dtype)
+    if self.streaming:
+      phases = ramp + self._phases.unsqueeze(-1)
+      self._phases.copy_(phases[:, :, -1] % (2.0 * math.pi))
+    else:
+      phases = ramp
+
+    # limit_components: keep forward()'s exact per-sample top-k band selection (audio rate).
+    limit_components = max(0.0, min(limit_components, 1.0))
+    if limit_components > 0.0:
+      max_sines = max(int(self._n_sines * (1.0 - limit_components)), 1)
+      _, indices = torch.topk(amplitudes, max_sines, dim=1)
+      mask = torch.zeros_like(amplitudes)
+      mask.scatter_(1, indices, 1.0)
+      amplitudes = amplitudes * mask
+
+    if ws > 0.0:
+      x = torch.sin(phases)
+      g = (ws / (1.0 - ws + 1e-6)) * 20.0
+      components = torch.lerp(x, torch.tanh(g * x), ws)
+    else:
+      components = torch.sin(phases)
+
+    return torch.sum(amplitudes * components, dim=1, keepdim=True)
 
   @torch.jit.ignore
   @staticmethod

@@ -69,6 +69,12 @@ class ScriptedDDSP(nn_tilde.Module):
     self.register_attribute("noise_amplitude_attenuation", 0.0)
     self.register_attribute("sines_amplitude_attenuation", 0.0)
     self.register_attribute("waveshaping", 0.0)
+    # Partial-limiting mode switch (0 loudest, 1 density, 2 lower, 3 higher, 4 peaks, 5 stochastic)
+    # + spectral bend amounts (all 0 = neutral). See BendableNoiseBandSynth._apply_spectral.
+    self.register_attribute("limit_mode", 0.0)
+    self.register_attribute("spectral_roll", 0.0)
+    self.register_attribute("spectral_stretch", 0.0)
+    self.register_attribute("spectral_warp", 0.0)
 
     # self.register_method(
     #   "forward",
@@ -166,7 +172,9 @@ class ScriptedDDSP(nn_tilde.Module):
       latents = torch.zeros(latents.size(0), latents.size(1), 1, device=latents.device)
 
     synth_params = self.pretrained.decoder(features, latents)
-    audio = self.pretrained._synthesize(synth_params, waveshaping_factor=self.waveshaping[0], limit_components=self.limit_components[0])
+    audio = self.pretrained._synthesize(synth_params, waveshaping_factor=self.waveshaping[0], limit_components=self.limit_components[0],
+                                        limit_mode=int(self.limit_mode[0]), spectral_roll=self.spectral_roll[0],
+                                        spectral_stretch=self.spectral_stretch[0], spectral_warp=self.spectral_warp[0])
     # print("Audio shape before interpolation:", audio.shape)
 
     if self.resample_ratio != 1:
@@ -234,6 +242,42 @@ class ScriptedDDSP(nn_tilde.Module):
   @torch.jit.export
   def set_sines_amplitude_attenuation(self, value: float):
     self.sines_amplitude_attenuation = (value, )
+    return 0
+
+  @torch.jit.export
+  def get_limit_mode(self) -> float:
+    return self.limit_mode[0]
+
+  @torch.jit.export
+  def set_limit_mode(self, value: float):
+    self.limit_mode = (value, )
+    return 0
+
+  @torch.jit.export
+  def get_spectral_roll(self) -> float:
+    return self.spectral_roll[0]
+
+  @torch.jit.export
+  def set_spectral_roll(self, value: float):
+    self.spectral_roll = (value, )
+    return 0
+
+  @torch.jit.export
+  def get_spectral_stretch(self) -> float:
+    return self.spectral_stretch[0]
+
+  @torch.jit.export
+  def set_spectral_stretch(self, value: float):
+    self.spectral_stretch = (value, )
+    return 0
+
+  @torch.jit.export
+  def get_spectral_warp(self) -> float:
+    return self.spectral_warp[0]
+
+  @torch.jit.export
+  def set_spectral_warp(self, value: float):
+    self.spectral_warp = (value, )
     return 0
 
 
@@ -376,20 +420,24 @@ def _compute_style_table(prior, cfg):
   if nter <= 0:
     return None
   byt = defaultdict(list)
+  _r.seed(0)  # deterministic centroid sampling -> reproducible style map (terrain matches the shipped .ts)
   idxs = _r.sample(range(len(ds)), min(4000, len(ds)))
   for i in idxs:
     item = ds[i]
-    byt[int(item[2])].append(item[0])
+    # Territory is the LAST tuple element (index 2 with a cond envelope -> (tok, cond, terr);
+    # index 1 without one -> (tok, terr)). Style-only models have no cond envelope, so index by -1.
+    byt[int(item[-1])].append(item[0])
   sd = int(prior._style_dim)
+  dev = next(prior.parameters()).device  # cache windows are on CPU; match the (possibly-GPU) encoder
   cents = []
   with torch.no_grad():
     for t in range(nter):
       ws = byt.get(t, [])
       if len(ws) == 0:
-        cents.append(torch.zeros(sd))
+        cents.append(torch.zeros(sd, device=dev))
       else:
-        cents.append(prior._encode_style(torch.stack(ws[:120])).mean(0))
-  return torch.stack(cents).float()  # [T, style_dim]
+        cents.append(prior._encode_style(torch.stack(ws[:120]).to(dev)).mean(0))
+  return torch.stack(cents).float().cpu()  # [T, style_dim]
 
 
 class PriorDiscreteWrapper(torch.nn.Module):
@@ -799,6 +847,72 @@ class ONNXDDSP(torch.nn.Module):
     return self.pretrained(audio.squeeze(1))
 
 
+def _reconstruct_control_space(checkpoint_path):
+  """Rebuild a minimal ControlSpace (features + latents) from a DDSP checkpoint's hparams."""
+  ckpt = torch.load(checkpoint_path, map_location='cpu')
+  hparams = ckpt.get('hyper_parameters', {})
+  feature_dim = int(hparams.get('feature_dim', 0))
+  latent_size = int(hparams.get('latent_size', 0))
+  fields = []
+  if feature_dim > 0:
+    fields.append(ControlField(name='features', dim=feature_dim, source='feature', extractor=None))
+  if latent_size > 0:
+    fields.append(ControlField(name='latents', dim=latent_size, source='latent', extractor=None))
+  if len(fields) == 0:
+    raise RuntimeError("Checkpoint missing feature_dim/latent_size hparams; cannot reconstruct ControlSpace.")
+  return ControlSpace(tuple(fields)), feature_dim, latent_size
+
+
+def load_discrete_wrapper(config, cfg, device='cpu'):
+  """Load PriorDiscrete + LatentCompressor + DDSP and build the PriorDiscreteWrapper for a discrete-prior
+  model. Returns (wrapper, compressor, prior_discrete, ddsp, feature_dim, latent_size).
+
+  Mirrors the exporter's discrete branch so offline tools (e.g. terrain rendering) reuse the EXACT same
+  pad geometry as the shipped .ts. The DDSP is loaded with streaming=False (whole-sequence offline render,
+  matching cli/generate_prior_discrete_audio)."""
+  disc = (cfg.get('prior', {}) or {}).get('discrete', {}) or {}
+  checkpoint_path = find_checkpoint(config.model_directory, typ=config.type)
+
+  if getattr(config, 'prior_checkpoint', None):
+    prior_ckpt = config.prior_checkpoint
+  else:
+    prior_ckpt = (find_checkpoint(config.prior_directory, typ='last', return_none=True)
+                  or find_checkpoint(config.prior_directory, typ=config.type))
+  # Load + build the wrapper on CPU (the wrapper __init__ probes the codec with a CPU dummy tensor),
+  # then move everything to the compute device at the end.
+  prior_discrete = PriorDiscrete.load_from_checkpoint(prior_ckpt, strict=False).to('cpu')
+  prior_discrete.eval(); prior_discrete._trainer = L.Trainer()
+
+  if getattr(config, 'compressor_checkpoint', None) is None:
+    raise RuntimeError("compressor checkpoint required (set --compressor_checkpoint or use --config).")
+  comp_full = LatentCompressor.load_from_checkpoint(config.compressor_checkpoint, strict=False).to('cpu')
+  comp_full.eval(); comp_full._trainer = L.Trainer()
+  compressor = LatentCompressorDecodeOnly(
+    vq=comp_full.vq, decoder=comp_full.decoder,
+    compression_ratio=int(getattr(comp_full, 'compression_ratio', 32))).to('cpu')
+  compressor.eval()
+
+  # Offline whole-sequence render (not the cached-conv streaming path used to script the .ts).
+  cc.use_cached_conv(False)
+  control_space, feature_dim, latent_size = _reconstruct_control_space(checkpoint_path)
+  ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=False, device='cpu',
+                                   control_space=control_space).to('cpu')
+  ddsp.streaming(False)
+
+  style_table = None
+  if int(getattr(prior_discrete, '_style_dim', 0)) > 0:
+    style_table = _compute_style_table(prior_discrete, cfg)
+  target_fs = getattr(config, 'target_fs', None) or float(ddsp.fs)
+  wrapper = PriorDiscreteWrapper(prior_discrete, compressor, resample_ratio=(target_fs / float(ddsp.fs)),
+                                 n_feature_channels=feature_dim,
+                                 terr_map_temp=float(disc.get('terr_map_temp', 0.5)),
+                                 decode_lookahead=int(disc.get('decode_lookahead', 2)),
+                                 style_table=style_table)
+
+  prior_discrete = prior_discrete.to(device); compressor = compressor.to(device)
+  ddsp = ddsp.to(device); wrapper = wrapper.to(device)
+  return wrapper, compressor, prior_discrete, ddsp, feature_dim, latent_size
+
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
@@ -814,6 +928,15 @@ if __name__ == '__main__':
   parser.add_argument('--prior_kind', default=None, choices=['mulaw', 'discrete'], help='Derived from cfg.prior.discrete.enabled if omitted')
   parser.add_argument('--compressor_checkpoint', type=str, default=None, help='LatentCompressor checkpoint (derived from --config for prior_kind=discrete)')
   parser.add_argument('--prior_checkpoint', type=str, default=None, help='Explicit prior checkpoint (overrides best_acc auto-pick)')
+  parser.add_argument('--emit_terrain', dest='emit_terrain', action='store_true', default=True,
+                      help='Also write <output>_terrain.json + .png (style/territory pad terrain for Max). Default on.')
+  parser.add_argument('--no_emit_terrain', dest='emit_terrain', action='store_false',
+                      help='Disable the terrain artifact.')
+  parser.add_argument('--terrain_grid', type=int, default=24,
+                      help='Terrain feature sampling: N>0 measures features on an NxN grid of interpolated '
+                           'pad points (real landscape); 0 = fast node-blend. Larger = finer but slower.')
+  parser.add_argument('--terrain_avg_seeds', type=int, default=1,
+                      help='Average terrain features over this many seeds per grid cell (denoise). Multiplies cost.')
   config = parser.parse_args()
 
   # Derive any unset options from the experiment config (explicit args win).
@@ -974,3 +1097,19 @@ if __name__ == '__main__':
     scripted.export_to_ts(config.output_path)
 
     print("Model exported to: ", config.output_path)
+
+    # Optional pad-terrain artifact (JSON for Max + PNG preview). Opt-in (default on), discrete + --config
+    # only. Reloads offline (streaming=False) so the .ts above is unaffected; the seeded style map matches
+    # the shipped model.
+    if getattr(config, 'emit_terrain', True) and config.prior_kind == 'discrete' and config.config is not None:
+      try:
+        from cli.terrain import render_terrain
+        base = os.path.splitext(config.output_path)[0]
+        t_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        w_t, comp_t, pdisc_t, ddsp_t, fdim_t, lsize_t = load_discrete_wrapper(config, _cfg, device=t_device)
+        render_terrain(pdisc_t, comp_t, ddsp_t, w_t, fdim_t, lsize_t,
+                       sample_grid=int(getattr(config, 'terrain_grid', 24)),
+                       avg_seeds=int(getattr(config, 'terrain_avg_seeds', 1)),
+                       json_path=base + '_terrain.json', png_path=base + '_terrain.png', device=t_device)
+      except Exception as e:
+        print(f"terrain render skipped: {e}")

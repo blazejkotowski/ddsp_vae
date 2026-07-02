@@ -126,6 +126,62 @@ If a model is exported with **territory** conditioning instead of style, channel
 `Territory X/Y` and channel 8 is `CFG Strength`; the layout is otherwise identical. Start around
 **CFG 1.5 / Temperature 0.6**; see DISCRETE_PRIOR.md §3 for the full tuning guide.
 
+### Synthesis / timbre attributes
+
+Beyond the signal inlets, the synth stage (`decode`) exposes **attributes** — persistent knobs you
+set live with a `set <name> <value>` message to the `nn~` object (e.g. `set waveshaping 0.7`). They
+shape *how* the control trajectory is rendered to audio and apply on top of whatever the prior
+generates. All default to `0` (neutral / off).
+
+| Attribute | Range | What it does |
+|---|---|---|
+| `waveshaping` | `0…1` | Morph **and** drive on one knob. `0` = pure noise-band synth (cheapest). `0→0.5` crossfades noise → sinusoidal bank. `0.5` = pure sines. `0.5→1` adds `tanh` waveshaping (saturation). **Note:** anything above `0` switches on the sine bank, which costs much more CPU than the noise synth. |
+| `limit_components` | `0…1` | Partial-thinning **amount**. `0` = keep all bands; toward `1` keeps progressively fewer (`k = (1−amount)·N` bands). |
+| `limit_mode` | `0…5` (int) | **Which** bands survive when limiting: `0` loudest (global top-k), `1` density (evenly spread across the spectrum), `2` lower (low-pass), `3` higher (high-pass), `4` peaks (the k most prominent spectral peaks — tonal skeleton), `5` stochastic (random, grainy). |
+| `spectral_roll` | `0…1` | Circular spectral shift **up** the spectrum, wrapping the top back to the bottom. `0` = none, `1` = full 360° wrap (returns to the start). A barber-pole / Shepard-style spectral glide. |
+| `spectral_stretch` | `−1…+1` | Scale the spectrum. `>0` spreads energy toward the highs (brighter/wider), `<0` compresses toward the lows. `0` = neutral. |
+| `spectral_warp` | `−1…+1` | Energy-preserving skew of the spectral envelope. `>0` pushes energy toward the low end (darker), `<0` toward the highs (brighter). `0` = neutral. |
+
+Notes:
+- **Order of effect:** bends first (`stretch → warp → roll`), then limiting. So limiting thins
+  whatever spectrum the bends produced.
+- **Click-free:** limiting and bends are computed at control rate and smoothed by the synth's
+  upsampling, so sweeping `limit_mode`, `limit_components`, or any bend does not click. Their CPU
+  cost is negligible; only `waveshaping > 0` is expensive (it enables the sine bank).
+- **`limit_mode` is an index** — send whole numbers `0`–`5` (values are clamped; anything else falls
+  back to `loudest`).
+- `noise_amplitude_attenuation` and `sines_amplitude_attenuation` are registered but currently
+  **inert** (reserved for future use).
+
+## Style-pad terrain (visual map of the XY pad)
+
+The Style/Territory XY pad can be exported as a 2-D **terrain heatmap** so a performer can *see* the
+landscape they navigate — where the material is rhythmic, percussive, bright, and so on, with the style
+embeddings sitting on peaks. For a grid of points across the pad it generates audio at that interpolated
+style, measures audio features (rhythmicity, onset density, percussiveness, loudness, brightness,
+noisiness), and rasterizes each into the pad's `[0,1]²` space. The output is a JSON (for a Max/PureData
+JS renderer) plus PNG previews.
+
+```zsh
+# Render a terrain for a trained style model. ALWAYS pass --from_ts pointing at the model you load in
+# Max, so the terrain lands on the exact same pad layout (the pad geometry is baked per export).
+python -m scripts.render_style_terrain --config <name> --from_ts models/<name>.ts \
+  --cfg 3 --temperature 0.4 --seconds 30 --sample_grid 16 --avg_seeds 5 --cache_audio \
+  --out terrain_previews/<name>
+
+# Re-render the PNG previews (single-feature heatmaps + RGB composites) from the JSON — instant.
+python -m scripts.preview_terrain --json terrain_previews/<name>.json --smooth 1.0
+
+# Tweak a feature definition and recompute the terrain from the cached audio — no GPU.
+python -m scripts.recompute_terrain --cache terrain_previews/<name>_audio.npy
+```
+
+`cli/export.py` also emits a matching terrain right after a `.ts` export (`--emit_terrain`, on by
+default; `--no_emit_terrain` to skip). A `jsui` renderer for Max/PureData ships at `max/terrain.js`
+(resizable; `umenu` to pick the feature/RGB view; a `cfg 0..20` message controls display contrast). See
+**[docs/terrain_format.md](docs/terrain_format.md)** for the JSON schema, the pad coordinate convention,
+the Max patch wiring, and the `--from_ts` requirement.
+
 ## Continuous vs discrete prior
 
 `prior.discrete.enabled` selects the prior:

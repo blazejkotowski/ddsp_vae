@@ -706,7 +706,9 @@ class DDSP(L.LightningModule):
     return self._discriminator(audio.reshape(B * N, 1, T))
 
 
-  def _synthesize(self, params: torch.Tensor, waveshaping_factor: float=0.0, limit_components: float=0.0) -> torch.Tensor:
+  def _synthesize(self, params: torch.Tensor, waveshaping_factor: float=0.0, limit_components: float=0.0,
+                  limit_mode: int=0, spectral_roll: float=0.0, spectral_stretch: float=0.0,
+                  spectral_warp: float=0.0) -> torch.Tensor:
     """
     Synthesizes a signal from the predicted amplitudes and the baked noise bands.
     Args:
@@ -735,7 +737,9 @@ class DDSP(L.LightningModule):
       name = synth.jit_name
 
       if name in ("NoiseBandSynth", "SubbandSineSynth", "BendableNoiseBandSynth", "ComplexSineSynth"):
-        audio.append(synth(synth_params, limit_components=limit_components, waveshaping_factor=waveshaping_factor))
+        audio.append(synth(synth_params, limit_components=limit_components, waveshaping_factor=waveshaping_factor,
+                           limit_mode=limit_mode, spectral_roll=spectral_roll,
+                           spectral_stretch=spectral_stretch, spectral_warp=spectral_warp))
       elif name in ("SineSynth",):
         audio.append(synth(synth_params, limit_components=limit_components))
       else:

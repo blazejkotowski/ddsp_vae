@@ -382,12 +382,21 @@ class PriorDiscrete(L.LightningModule):
         self.log("loss", out["loss"], prog_bar=True)
         self.log("acc", out["acc"], prog_bar=True)
         self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=True)
+        # REACH: the metrics that actually matter for a style prior (see _step). Logged when present.
+        if "style_sep_acc" in out:
+            self.log("style_sep_acc", out["style_sep_acc"], prog_bar=True)
+        if "reach" in out:
+            self.log("reach", out["reach"], prog_bar=True)
         return out
 
     def validation_step(self, batch: torch.Tensor, batch_idx: int) -> Dict[str, torch.Tensor]:
         out = self._step(batch)
         self.log("val_loss", out["loss"], prog_bar=True)
         self.log("val_acc", out["acc"], prog_bar=True)
+        if "style_sep_acc" in out:
+            self.log("val_style_sep_acc", out["style_sep_acc"], prog_bar=True)
+        if "reach" in out:
+            self.log("val_reach", out["reach"], prog_bar=True)
         return out
 
     def configure_optimizers(self) -> Any:
@@ -470,9 +479,12 @@ class PriorDiscrete(L.LightningModule):
         seq = torch.cat([start, batch], dim=1)  # [B, S+1, N]
         x = seq[:, :-1, :]  # [B, S, N], begins with START
         y = seq[:, 1:, :]   # [B, S, N], the real tokens
+        x0 = seq[:, :-1, :]  # clean context (pre context-dropout / scheduled-sampling) for reach metric
 
         style_vec = None
         style_aux = None
+        s_clean = None
+        style_sep_acc = None
         if self._style_encoder is not None:
             # Style is the GLOBAL texture of this window (the LFO-complement): encode it from the
             # window's CLEAN real tokens (before any context corruption). Explaining-away — the
@@ -484,7 +496,11 @@ class PriorDiscrete(L.LightningModule):
                 tlab = territory_id.long().view(b)
                 valid = tlab < self._num_territories
                 if bool(valid.any()):
-                    style_aux = cross_entropy(self._style_clf(s_clean[valid]), tlab[valid])
+                    clf_logits = self._style_clf(s_clean[valid])
+                    style_aux = cross_entropy(clf_logits, tlab[valid])
+                    # REACH proxy 1 (style separability): can the style codes be told apart by
+                    # territory? High => pad zones CAN be distinct. Training-time analog of offline hit@1.
+                    style_sep_acc = (clf_logits.argmax(-1) == tlab[valid]).float().mean().detach()
             style_vec = s_clean
             if self.training and self._style_dropout > 0.0:
                 sdrop = torch.rand(style_vec.shape[0], device=style_vec.device) < self._style_dropout
@@ -535,7 +551,50 @@ class PriorDiscrete(L.LightningModule):
         ).nanmean()
 
         loss = ce
+        metrics = {"loss": loss, "acc": acc, "ce": ce.detach()}
         if style_aux is not None:
             loss = loss + self._style_aux_weight * style_aux
-            return {"loss": loss, "acc": acc, "ce": ce.detach(), "style_aux": style_aux.detach()}
-        return {"loss": loss, "acc": acc, "ce": ce.detach()}
+            metrics["loss"] = loss
+            metrics["style_aux"] = style_aux.detach()
+        if style_sep_acc is not None:
+            metrics["style_sep_acc"] = style_sep_acc
+
+        # REACH proxy 2 (steering strength): does the SPECIFIC conditioning steer the output? CE contrast
+        # between the CORRECT conditioning and a MISMATCHED one (a neighbour's style/territory), on clean
+        # context. This is the number that matters for a style prior — it answers "do different pad zones
+        # produce different distributions". >0 => the pad steers (bigger = more contrast); ~0 => inert.
+        # NB: top-1 accuracy misses this (argmax is insensitive to the mass shift) and NULL conditioning
+        # under-reads it (the learned null is benign) — a MISMATCH is what exposes reach. Every val step;
+        # sparse in train (2 extra forwards) to keep training fast.
+        every = int(getattr(self, "_reach_log_every", 25))
+        if (not self.training) or (every > 0 and int(self.global_step) % every == 0):
+            reach = self._reach_metric(x0, y, dt, territory_id, cond, s_clean)
+            if reach is not None:
+                metrics["reach"] = reach
+        return metrics
+
+    @torch.no_grad()
+    def _reach_metric(self, x0, y, dt, territory_id, cond, s_clean):
+        """CE(mismatched conditioning) - CE(correct conditioning) on clean context: steering strength.
+
+        Style models: mismatch = each row gets a NEIGHBOUR's style code (territory held fixed) -> how much
+        the STYLE (the XY pad) steers. Territory-only models: mismatch = rolled territory ids. >0 means the
+        specific conditioning genuinely changes the predicted distribution. Detached scalar, or None when
+        unconditioned / batch too small."""
+        b, k = x0.shape[0], self._codebook_size
+        if b < 2:
+            return None
+        roll = torch.roll(torch.arange(b, device=x0.device), 1)  # deterministic mismatch: neighbour's cond
+
+        def _ce(logits: torch.Tensor) -> torch.Tensor:
+            return cross_entropy(logits.permute(0, 3, 1, 2).reshape(b, k, -1), y.reshape(b, -1))
+
+        if s_clean is not None:
+            ce_c = _ce(self(x0, territory_id=territory_id, cond=cond, depth_targets=dt, style_vec=s_clean))
+            ce_m = _ce(self(x0, territory_id=territory_id, cond=cond, depth_targets=dt, style_vec=s_clean[roll]))
+            return (ce_m - ce_c).detach()
+        if self._territory_embedding is not None and territory_id is not None:
+            ce_c = _ce(self(x0, territory_id=territory_id, cond=cond, depth_targets=dt))
+            ce_m = _ce(self(x0, territory_id=territory_id[roll], cond=cond, depth_targets=dt))
+            return (ce_m - ce_c).detach()
+        return None
