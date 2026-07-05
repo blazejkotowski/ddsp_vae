@@ -24,13 +24,27 @@ torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
 
 class ScriptedDDSP(nn_tilde.Module):
+  # Stage-2 faithful post-net (StreamingSpecTransform): a bounded STFT-domain transform of the synth
+  # output, blended by the runtime `postnet_mix` attribute (0 = raw synth, 1 = fully transformed).
+  # Pruned entirely when the model is exported without a post-net.
+  has_stage2: torch.jit.Final[bool]
+
   def __init__(self,
                pretrained: DDSP,
                prior_model: torch.nn.Module = None,
-               target_fs: float = 16000.0):
+               target_fs: float = 16000.0,
+               stage2_postnet: torch.nn.Module = None):
     super().__init__()
 
     self.pretrained = pretrained
+    # Export is inference-only; the post-net's streaming cached convs write state buffers in-place,
+    # which autograd forbids while any param requires grad — freeze before nn_tilde's test forward.
+    self.pretrained.requires_grad_(False)
+
+    self.has_stage2 = stage2_postnet is not None
+    self.stage2 = stage2_postnet if stage2_postnet is not None else torch.nn.Identity()
+    if self.has_stage2:
+      self.stage2.requires_grad_(False)
 
     self.resample_ratio = target_fs / self.pretrained.fs
 
@@ -75,6 +89,8 @@ class ScriptedDDSP(nn_tilde.Module):
     self.register_attribute("spectral_roll", 0.0)
     self.register_attribute("spectral_stretch", 0.0)
     self.register_attribute("spectral_warp", 0.0)
+    # Post-net strength: 0 = raw synth (post-net bypassed), 1 = fully transformed. Default on.
+    self.register_attribute("postnet_mix", 1.0 if self.has_stage2 else 0.0)
 
     # self.register_method(
     #   "forward",
@@ -177,6 +193,13 @@ class ScriptedDDSP(nn_tilde.Module):
                                         spectral_stretch=self.spectral_stretch[0], spectral_warp=self.spectral_warp[0])
     # print("Audio shape before interpolation:", audio.shape)
 
+    # Stage-2 faithful post-net: transform the synth output, conditioned on the full control
+    # (features + latents = `params`), blended by postnet_mix (the module blends dry/wet internally).
+    if self.has_stage2:
+      mix = self.postnet_mix[0]
+      if mix > 0.001:
+        audio = self.stage2(audio, params, mix)
+
     if self.resample_ratio != 1:
       audio = F.interpolate(audio, scale_factor=self.resample_ratio, mode='linear')
 
@@ -214,6 +237,15 @@ class ScriptedDDSP(nn_tilde.Module):
   @torch.jit.export
   def set_waveshaping(self, value: float):
     self.waveshaping = (value, )
+    return 0
+
+  @torch.jit.export
+  def get_postnet_mix(self) -> float:
+    return self.postnet_mix[0]
+
+  @torch.jit.export
+  def set_postnet_mix(self, value: float):
+    self.postnet_mix = (value, )
     return 0
 
 
@@ -937,6 +969,9 @@ if __name__ == '__main__':
                            'pad points (real landscape); 0 = fast node-blend. Larger = finer but slower.')
   parser.add_argument('--terrain_avg_seeds', type=int, default=1,
                       help='Average terrain features over this many seeds per grid cell (denoise). Multiplies cost.')
+  parser.add_argument('--postnet', type=str, default=None,
+                      help='Faithful post-net checkpoint (StreamFX). Adds a runtime postnet_mix attribute '
+                           '(0 = raw synth, 1 = fully transformed).')
   config = parser.parse_args()
 
   # Derive any unset options from the experiment config (explicit args win).
@@ -1086,8 +1121,22 @@ if __name__ == '__main__':
 
     ddsp.eval()
 
+    stage2 = None
+    if getattr(config, 'postnet', None):
+      from cli.streaming_postnet import StreamingSpecTransform
+      _pck = torch.load(config.postnet, map_location='cpu')
+      _sd = {k[4:]: v for k, v in _pck['state'].items() if k.startswith('mod.')}  # unwrap StreamFX
+      _c = _pck['cfg']
+      stage2 = StreamingSpecTransform(_sd, cond_dim=int(_c.get('cond_dim', 4)),
+                                      ch=int(_c.get('ch', 96)), layers=int(_c.get('layers', 8)),
+                                      ch2=int(_c.get('ch2', 64)), layers2=int(_c.get('layers2', 6)),
+                                      max_gain_db=float(_c.get('max_gain_db', 18.0)),
+                                      phase_cap=float(_c.get('phase_cap', 1.57)),
+                                      la_f=int(_c.get('la_f', 3)))
+      stage2.eval()
+      print(f"faithful post-net loaded: {config.postnet}")
 
-    scripted = ScriptedDDSP(ddsp, prior, config.target_fs).to('cpu')
+    scripted = ScriptedDDSP(ddsp, prior, config.target_fs, stage2_postnet=stage2).to('cpu')
     # Registering/scripting the nn~ methods can advance the discrete-prior wrapper's
     # token buffer with junk; clear it so the saved model starts from a clean START.
     if isinstance(prior, PriorDiscreteWrapper):

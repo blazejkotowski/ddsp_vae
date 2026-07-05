@@ -46,6 +46,9 @@ pip install -e .
   discrete tokens (`num_codebooks` indices per token) at a chosen token rate.
 - **Prior**: a causal Transformer that generates token sequences, conditioned on the style code
   (and optionally LFO / territory), consumed in realtime through a KV cache.
+- **Post-net** (optional): a faithful, streaming neural enhancer applied *after* the synth — a
+  bounded STFT-domain **transform** of the rough output (not a generator), exposed live as the
+  `postnet_mix` knob. See **[docs/PostNet_Architecture.md](docs/PostNet_Architecture.md)**.
 
 ## Quickstart — the 3-stage workflow
 
@@ -135,6 +138,7 @@ generates. All default to `0` (neutral / off).
 
 | Attribute | Range | What it does |
 |---|---|---|
+| `postnet_mix` | `0…1` | Strength of the **faithful post-net** — a neural enhancer that reshapes the synth's output (sharper transients, corrected envelope). `0` = raw synth (post-net bypassed, no extra CPU), `1` = fully enhanced (default). Intermediate values are a phase-coherent wet/dry blend. Present only when the model was exported with a post-net. See [PostNet_Architecture.md](docs/PostNet_Architecture.md). |
 | `waveshaping` | `0…1` | Morph **and** drive on one knob. `0` = pure noise-band synth (cheapest). `0→0.5` crossfades noise → sinusoidal bank. `0.5` = pure sines. `0.5→1` adds `tanh` waveshaping (saturation). **Note:** anything above `0` switches on the sine bank, which costs much more CPU than the noise synth. |
 | `limit_components` | `0…1` | Partial-thinning **amount**. `0` = keep all bands; toward `1` keeps progressively fewer (`k = (1−amount)·N` bands). |
 | `limit_mode` | `0…5` (int) | **Which** bands survive when limiting: `0` loudest (global top-k), `1` density (evenly spread across the spectrum), `2` lower (low-pass), `3` higher (high-pass), `4` peaks (the k most prominent spectral peaks — tonal skeleton), `5` stochastic (random, grainy). |
@@ -150,6 +154,11 @@ Notes:
   cost is negligible; only `waveshaping > 0` is expensive (it enables the sine bank).
 - **`limit_mode` is an index** — send whole numbers `0`–`5` (values are clamped; anything else falls
   back to `loudest`).
+- **`postnet_mix` is a faithful transform** of the synth's output — bends still pass *through* it at
+  `postnet_mix 1`, so combining a bend with the post-net behaves musically rather than being erased.
+  It adds ~36 ms latency and streams click-free. The separate `post_net_enabled` attribute is an
+  older, unused enhancer — leave it at `0`. Full design in
+  [docs/PostNet_Architecture.md](docs/PostNet_Architecture.md).
 - `noise_amplitude_attenuation` and `sines_amplitude_attenuation` are registered but currently
   **inert** (reserved for future use).
 
