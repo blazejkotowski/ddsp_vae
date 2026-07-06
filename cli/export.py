@@ -21,8 +21,9 @@ from ddsp.prior.kv_infer import KVCachedPrior
 from ddsp.latent_compressor import LatentCompressor
 
 # torch>=2.6 checkpoint-load compatibility (Colab). See ddsp/checkpoint_compat.py.
-from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints
+from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints, force_weights_only_false
 allow_full_checkpoints()
+force_weights_only_false()
 
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)

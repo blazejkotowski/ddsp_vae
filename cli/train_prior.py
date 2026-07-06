@@ -10,8 +10,9 @@ import hydra
 from omegaconf import DictConfig
 
 # torch>=2.6 checkpoint-load compatibility (Colab). See ddsp/checkpoint_compat.py.
-from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints
+from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints, force_weights_only_false
 allow_full_checkpoints()
+force_weights_only_false()
 
 from ddsp import DDSP
 from ddsp.audio_feature_dataset import AudioFeatureDataset

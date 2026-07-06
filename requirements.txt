@@ -1,6 +1,6 @@
-numpy<2
-torch
-torchaudio
+numpy
+torch==2.11.0
+torchaudio==2.11.0
 tensorboard
 matplotlib
 auraloss

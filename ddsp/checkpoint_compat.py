@@ -36,6 +36,33 @@ def weights_only_false_kwargs(fn) -> dict:
   return {"weights_only": False} if "weights_only" in params else {}
 
 
+def force_weights_only_false() -> None:
+  """Make ``torch.load`` default to ``weights_only=False`` for our trusted, locally produced
+  checkpoints on torch>=2.6.
+
+  The sanctioned ``add_safe_globals`` allowlist (:func:`allow_full_checkpoints`) is not enough for
+  our checkpoints: their ``hyper_parameters`` embed OmegaConf containers whose safe-unpickling needs
+  more than a handful of globals, so ``weights_only=True`` still fails. Rather than chase every load
+  site (Lightning internals, notebook helpers, standalone CLIs) with a per-call ``weights_only=False``
+  kwarg, patch the default in one place. Idempotent; explicit ``weights_only=...`` callers win."""
+  if getattr(torch, "_ddsp_load_patched", False):
+    return
+  import functools
+
+  _orig_load = torch.load
+
+  @functools.wraps(_orig_load)
+  def _load(*args, **kwargs):
+    # Coerce missing *and* explicit-None to False: Lightning threads weights_only=None down to
+    # torch.load, and torch treats None as "use default" (True on >=2.6). Explicit True/False win.
+    if kwargs.get("weights_only") is None:
+      kwargs["weights_only"] = False
+    return _orig_load(*args, **kwargs)
+
+  torch.load = _load
+  torch._ddsp_load_patched = True
+
+
 def allow_full_checkpoints() -> None:
   """Best-effort allowlist (torch's ``add_safe_globals``) for load paths without a ``weights_only``
   arg. No-op on torch<2.4 (which defaults ``weights_only=False`` anyway)."""

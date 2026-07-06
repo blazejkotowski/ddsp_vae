@@ -29,6 +29,12 @@ from ddsp.latent_compressor import LatentCompressor
 from ddsp.prior import PriorDiscrete
 from ddsp.interfaces import ControlField, ControlSpace, build_control_space
 from ddsp.utils import find_checkpoint
+from ddsp.checkpoint_compat import allow_full_checkpoints, force_weights_only_false
+
+# torch>=2.6 defaults torch.load to weights_only=True, which rejects the OmegaConf objects in our
+# checkpoints' hyper_parameters. These are trusted, locally produced checkpoints — load them fully.
+allow_full_checkpoints()
+force_weights_only_false()
 
 
 # --------------------------------------------------------------------------- #
@@ -131,6 +137,7 @@ def load_ddsp(cfg: dict, device: str = "cuda") -> DDSP:
     streaming=False,
     device=device,
     control_space=model_control_space(feature_dim, latent_size),
+    weights_only=False
   ).to(device)
   ddsp.eval()
   return ddsp

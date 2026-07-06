@@ -5,6 +5,65 @@ import torch.nn.functional as F
 import numpy as np
 import auraloss
 
+
+# --- auraloss patches -------------------------------------------------------
+# These reproduce hand-edits that used to live only inside one conda env's
+# auraloss/freq.py, which silently broke on fresh environments. Applying them
+# here keeps them with the repo and env-independent. Idempotent (sentinel flag).
+if not getattr(auraloss.freq, "_ddsp_patched", False):
+  import inspect as _inspect
+
+  # 1) log1p magnitude (Schwär & Müller, 2023, "Multi-Scale Spectral Loss
+  #    Revisited", IEEE SPL 30, 1712-1716). Stock auraloss uses torch.log, which
+  #    blows up on near-silent spectral bins (log(0) -> -inf), giving a harsher,
+  #    higher-scale, worse-converging loss.
+  def _log1p_stft_magnitude_forward(self, x_mag, y_mag):
+    if self.log:
+      x_mag = torch.log1p(x_mag)
+      y_mag = torch.log1p(y_mag)
+    return self.distance(x_mag, y_mag)
+
+  auraloss.freq.STFTMagnitudeLoss.forward = _log1p_stft_magnitude_forward
+
+  # 2) STFTLoss.__init__ extras: flattop-window support (scipy) and the chroma
+  #    filterbank tensor conversion (stock auraloss passes a numpy array to
+  #    register_buffer, which raises). STFTLoss is built positionally by
+  #    MultiResolutionSTFTLoss, so resolve args by name via the signature.
+  _orig_stftloss_init = auraloss.freq.STFTLoss.__init__
+  _stftloss_sig = _inspect.signature(_orig_stftloss_init)
+
+  def _patched_stftloss_init(self, *args, **kwargs):
+    bound = _stftloss_sig.bind(self, *args, **kwargs)
+    bound.apply_defaults()
+    a = bound.arguments
+    use_flattop = (a.get("window") == "flattop_window")
+    use_chroma = (a.get("scale") == "chroma")
+    win_length = a.get("win_length")
+    # Build with the special cases neutralised so the original init can't crash:
+    # a valid torch window name for flattop, and no scale for chroma.
+    if use_flattop:
+      a["window"] = "hann_window"
+    if use_chroma:
+      a["scale"] = None
+    _orig_stftloss_init(self, **{k: v for k, v in a.items() if k != "self"})
+    if use_flattop:
+      import scipy.signal
+      w = scipy.signal.windows.flattop(win_length, sym=False)  # sym=False for FFT use
+      self.window = torch.from_numpy(w).float()
+    if use_chroma:
+      import librosa.filters
+      self.scale = "chroma"
+      fb = librosa.filters.chroma(sr=a.get("sample_rate"), n_fft=a.get("fft_size"), n_bins=a.get("n_bins")) \
+        if "n_bins" in _inspect.signature(librosa.filters.chroma).parameters \
+        else librosa.filters.chroma(sr=a.get("sample_rate"), n_fft=a.get("fft_size"), n_chroma=a.get("n_bins"))
+      self.register_buffer("fb", torch.tensor(fb))
+      if a.get("device") is not None:
+        self.fb = self.fb.to(a.get("device"))
+
+  auraloss.freq.STFTLoss.__init__ = _patched_stftloss_init
+  auraloss.freq._ddsp_patched = True
+# ---------------------------------------------------------------------------
+
 from ddsp.blocks import VariationalEncoder, Decoder
 from ddsp.discriminator import Discriminator
 from ddsp.synths import BaseSynth, SineSynth, SubbandSineSynth, NoiseBandSynth, BendableNoiseBandSynth
