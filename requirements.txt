@@ -1,7 +1,8 @@
-numpy
+numpy<2
 torch
 torchaudio
 tensorboard
+matplotlib
 auraloss
 lightning
 nn-tilde
