@@ -37,13 +37,22 @@ class ScriptedDDSP(nn_tilde.Module):
                pretrained: DDSP,
                prior_model: torch.nn.Module = None,
                target_fs: float = 16000.0,
-               stage2_postnet: torch.nn.Module = None):
+               stage2_postnet: torch.nn.Module = None,
+               register_encode: bool = True):
     super().__init__()
 
     self.pretrained = pretrained
     # Export is inference-only; the post-net's streaming cached convs write state buffers in-place,
     # which autograd forbids while any param requires grad — freeze before nn_tilde's test forward.
     self.pretrained.requires_grad_(False)
+
+    # Drop the encoder when encode() is not exported. encode() is @torch.jit.export (compiled even
+    # when not registered as an nn~ method), and it is the only path that reaches the encoder's
+    # torchaudio MelSpectrogram (torch.stft). Setting the encoder to None makes encode()'s body dead
+    # code (its `if encoder is None: raise` guard), so no stft is scripted and the exported model
+    # loads in nn~ builds whose libtorch is older than the export-time torch.
+    if not register_encode:
+      self.pretrained.encoder = None
 
     self.has_stage2 = stage2_postnet is not None
     self.stage2 = stage2_postnet if stage2_postnet is not None else torch.nn.Identity()
@@ -123,7 +132,7 @@ class ScriptedDDSP(nn_tilde.Module):
       test_method=True,
     )
 
-    if self.pretrained.latent_size > 0:
+    if self.pretrained.latent_size > 0 and register_encode:
       self.register_method(
         "encode",
         in_channels = n_channels,
@@ -965,6 +974,10 @@ if __name__ == '__main__':
   parser.add_argument('--prior_kind', default=None, choices=['mulaw', 'discrete'], help='Derived from cfg.prior.discrete.enabled if omitted')
   parser.add_argument('--compressor_checkpoint', type=str, default=None, help='LatentCompressor checkpoint (derived from --config for prior_kind=discrete)')
   parser.add_argument('--prior_checkpoint', type=str, default=None, help='Explicit prior checkpoint (overrides best_acc auto-pick)')
+  parser.add_argument('--no_encode', dest='register_encode', action='store_false', default=True,
+                      help='Do not register the audio->latent encode() method. Drops the encoder '
+                           'melspectrogram (torch.stft), so the exported model loads in nn~ builds with '
+                           'an older libtorch. Use for generative prior-only instruments.')
   parser.add_argument('--emit_terrain', dest='emit_terrain', action='store_true', default=True,
                       help='Also write <output>_terrain.json + .png (style/territory pad terrain for Max). Default on.')
   parser.add_argument('--no_emit_terrain', dest='emit_terrain', action='store_false',
@@ -1141,7 +1154,8 @@ if __name__ == '__main__':
       stage2.eval()
       print(f"faithful post-net loaded: {config.postnet}")
 
-    scripted = ScriptedDDSP(ddsp, prior, config.target_fs, stage2_postnet=stage2).to('cpu')
+    scripted = ScriptedDDSP(ddsp, prior, config.target_fs, stage2_postnet=stage2,
+                            register_encode=config.register_encode).to('cpu')
     # Registering/scripting the nn~ methods can advance the discrete-prior wrapper's
     # token buffer with junk; clear it so the saved model starts from a clean START.
     if isinstance(prior, PriorDiscreteWrapper):
@@ -1164,6 +1178,6 @@ if __name__ == '__main__':
         render_terrain(pdisc_t, comp_t, ddsp_t, w_t, fdim_t, lsize_t,
                        sample_grid=int(getattr(config, 'terrain_grid', 24)),
                        avg_seeds=int(getattr(config, 'terrain_avg_seeds', 1)),
-                       json_path=base + '_terrain.json', png_path=base + '_terrain.png', device=t_device)
+                       json_path=base + '.json', png_path=base + '_terrain.png', device=t_device)
       except Exception as e:
         print(f"terrain render skipped: {e}")
