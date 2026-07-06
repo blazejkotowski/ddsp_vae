@@ -20,9 +20,9 @@ from ddsp.prior import Prior, PriorDiscrete
 from ddsp.prior.kv_infer import KVCachedPrior
 from ddsp.latent_compressor import LatentCompressor
 
-# Allow torch>=2.6 (weights_only=True) to load the OmegaConf config in checkpoint hparams.
-from ddsp.checkpoint_compat import allow_omegaconf_checkpoints
-allow_omegaconf_checkpoints()
+# torch>=2.6 checkpoint-load compatibility (Colab). See ddsp/checkpoint_compat.py.
+from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints
+allow_full_checkpoints()
 
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
@@ -885,7 +885,7 @@ class ONNXDDSP(torch.nn.Module):
 
 def _reconstruct_control_space(checkpoint_path):
   """Rebuild a minimal ControlSpace (features + latents) from a DDSP checkpoint's hparams."""
-  ckpt = torch.load(checkpoint_path, map_location='cpu')
+  ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
   hparams = ckpt.get('hyper_parameters', {})
   feature_dim = int(hparams.get('feature_dim', 0))
   latent_size = int(hparams.get('latent_size', 0))
@@ -916,12 +916,12 @@ def load_discrete_wrapper(config, cfg, device='cpu'):
                   or find_checkpoint(config.prior_directory, typ=config.type))
   # Load + build the wrapper on CPU (the wrapper __init__ probes the codec with a CPU dummy tensor),
   # then move everything to the compute device at the end.
-  prior_discrete = PriorDiscrete.load_from_checkpoint(prior_ckpt, strict=False).to('cpu')
+  prior_discrete = PriorDiscrete.load_from_checkpoint(prior_ckpt, strict=False, **weights_only_false_kwargs(PriorDiscrete.load_from_checkpoint)).to('cpu')
   prior_discrete.eval(); prior_discrete._trainer = L.Trainer()
 
   if getattr(config, 'compressor_checkpoint', None) is None:
     raise RuntimeError("compressor checkpoint required (set --compressor_checkpoint or use --config).")
-  comp_full = LatentCompressor.load_from_checkpoint(config.compressor_checkpoint, strict=False).to('cpu')
+  comp_full = LatentCompressor.load_from_checkpoint(config.compressor_checkpoint, strict=False, **weights_only_false_kwargs(LatentCompressor.load_from_checkpoint)).to('cpu')
   comp_full.eval(); comp_full._trainer = L.Trainer()
   compressor = LatentCompressorDecodeOnly(
     vq=comp_full.vq, decoder=comp_full.decoder,
@@ -932,6 +932,7 @@ def load_discrete_wrapper(config, cfg, device='cpu'):
   cc.use_cached_conv(False)
   control_space, feature_dim, latent_size = _reconstruct_control_space(checkpoint_path)
   ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=False, device='cpu',
+                                   **weights_only_false_kwargs(DDSP.load_from_checkpoint),
                                    control_space=control_space).to('cpu')
   ddsp.streaming(False)
 
@@ -1044,11 +1045,11 @@ if __name__ == '__main__':
       if config.compressor_checkpoint is None:
         raise RuntimeError("--compressor_checkpoint is required when --prior_kind=discrete")
 
-      prior_discrete = PriorDiscrete.load_from_checkpoint(prior_checkpoint_path, strict=False).to('cpu')
+      prior_discrete = PriorDiscrete.load_from_checkpoint(prior_checkpoint_path, strict=False, **weights_only_false_kwargs(PriorDiscrete.load_from_checkpoint)).to('cpu')
       prior_discrete.eval()
       prior_discrete._trainer = L.Trainer()
 
-      compressor_full = LatentCompressor.load_from_checkpoint(config.compressor_checkpoint, strict=False).to('cpu')
+      compressor_full = LatentCompressor.load_from_checkpoint(config.compressor_checkpoint, strict=False, **weights_only_false_kwargs(LatentCompressor.load_from_checkpoint)).to('cpu')
       compressor_full.eval()
       compressor_full._trainer = L.Trainer()
 
@@ -1066,7 +1067,7 @@ if __name__ == '__main__':
     else:
       prior_checkpoint_path = find_checkpoint(config.prior_directory, typ=config.type)
       print("exporting prior model from checkpoint: ", prior_checkpoint_path)
-      prior = Prior.load_from_checkpoint(prior_checkpoint_path, strict=False).to('cpu')
+      prior = Prior.load_from_checkpoint(prior_checkpoint_path, strict=False, **weights_only_false_kwargs(Prior.load_from_checkpoint)).to('cpu')
       prior.eval()
       if prior._normalization_dict is not None:
         for k, v in prior._normalization_dict.items():
@@ -1076,7 +1077,7 @@ if __name__ == '__main__':
       prior._trainer = L.Trainer()
 
   # Reconstruct minimal ControlSpace from checkpoint hyperparameters
-  ckpt = torch.load(checkpoint_path, map_location='cpu')
+  ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
   hparams = ckpt.get('hyper_parameters', {})
   feature_dim = int(hparams.get('feature_dim', 0))
   latent_size = int(hparams.get('latent_size', 0))
@@ -1089,7 +1090,7 @@ if __name__ == '__main__':
     raise RuntimeError("Checkpoint missing feature_dim/latent_size hparams; cannot reconstruct ControlSpace for export.")
   control_space = ControlSpace(tuple(fields))
 
-  ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=True, device='cpu', control_space=control_space).to('cpu')
+  ddsp = DDSP.load_from_checkpoint(checkpoint_path, strict=False, streaming=True, device='cpu', control_space=control_space, **weights_only_false_kwargs(DDSP.load_from_checkpoint)).to('cpu')
   ddsp.streaming(True)
 
   if config.prior_kind == 'discrete' and prior_discrete is not None:
@@ -1128,7 +1129,7 @@ if __name__ == '__main__':
     stage2 = None
     if getattr(config, 'postnet', None):
       from cli.streaming_postnet import StreamingSpecTransform
-      _pck = torch.load(config.postnet, map_location='cpu')
+      _pck = torch.load(config.postnet, map_location='cpu', weights_only=False)
       _sd = {k[4:]: v for k, v in _pck['state'].items() if k.startswith('mod.')}  # unwrap StreamFX
       _c = _pck['cfg']
       stage2 = StreamingSpecTransform(_sd, cond_dim=int(_c.get('cond_dim', 4)),

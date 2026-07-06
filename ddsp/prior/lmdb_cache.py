@@ -13,6 +13,7 @@ from ddsp.ddsp import DDSP
 from ddsp.interfaces import ControlSpace
 from ddsp.latent_compressor import LatentCompressor
 from ddsp.utils import find_checkpoint
+from ddsp.checkpoint_compat import weights_only_false_kwargs
 
 
 def _control_space_signature(control_space: ControlSpace) -> str:
@@ -315,6 +316,7 @@ def build_or_load_prior_cache_from_cfg(
         adv_gen_weight=float(cfg.adversarial.weights.gen),
         adv_disc_weight=float(cfg.adversarial.weights.disc),
         adv_fm_weight=float(cfg.adversarial.weights.fm),
+        **weights_only_false_kwargs(DDSP.load_from_checkpoint),
     ).to(dev)
 
     stats = ensure_prior_controls_lmdb(
@@ -787,9 +789,11 @@ def build_or_load_prior_tokens_cache_from_cfg(
         adv_gen_weight=float(cfg.adversarial.weights.gen),
         adv_disc_weight=float(cfg.adversarial.weights.disc),
         adv_fm_weight=float(cfg.adversarial.weights.fm),
+        **weights_only_false_kwargs(DDSP.load_from_checkpoint),
     ).to(dev)
 
-    compressor = LatentCompressor.load_from_checkpoint(compressor_ckpt).to(dev)
+    compressor = LatentCompressor.load_from_checkpoint(
+        compressor_ckpt, **weights_only_false_kwargs(LatentCompressor.load_from_checkpoint)).to(dev)
 
     stats = ensure_prior_tokens_lmdb(
         audio_ds=audio_ds,

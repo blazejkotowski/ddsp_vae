@@ -6,9 +6,9 @@ import torch
 torch.set_default_dtype(torch.float32)
 torch.set_float32_matmul_precision('medium')
 
-# Allow torch>=2.6 (weights_only=True) to load the OmegaConf config in checkpoint hparams on resume.
-from ddsp.checkpoint_compat import allow_omegaconf_checkpoints
-allow_omegaconf_checkpoints()
+# torch>=2.6 checkpoint-load compatibility (Colab). See ddsp/checkpoint_compat.py.
+from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints
+allow_full_checkpoints()
 
 import os
 import shutil
@@ -153,7 +153,8 @@ def main(cfg: DictConfig) -> None:
     print(f"Resuming from checkpoint: {synth_ckpt_path}")
 
   # Train
-  synth_trainer.fit(model=ddsp, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=synth_ckpt_path)
+  synth_trainer.fit(model=ddsp, train_dataloaders=train_loader, val_dataloaders=val_loader,
+                    ckpt_path=synth_ckpt_path, **weights_only_false_kwargs(synth_trainer.fit))
   print(f"Synthesizer training completed. Your checkpoints are in {synth_training_path}")
 
 

@@ -9,9 +9,9 @@ from lightning.pytorch.loggers import TensorBoardLogger
 import hydra
 from omegaconf import DictConfig
 
-# Allow torch>=2.6 (weights_only=True) to load the OmegaConf config in checkpoint hparams on resume.
-from ddsp.checkpoint_compat import allow_omegaconf_checkpoints
-allow_omegaconf_checkpoints()
+# torch>=2.6 checkpoint-load compatibility (Colab). See ddsp/checkpoint_compat.py.
+from ddsp.checkpoint_compat import weights_only_false_kwargs, allow_full_checkpoints
+allow_full_checkpoints()
 
 from ddsp import DDSP
 from ddsp.audio_feature_dataset import AudioFeatureDataset
@@ -54,6 +54,7 @@ def _load_ddsp(cfg: DictConfig, control_space, synth_configs, device: str) -> DD
     adv_gen_weight=float(cfg.adversarial.weights.gen),
     adv_disc_weight=float(cfg.adversarial.weights.disc),
     adv_fm_weight=float(cfg.adversarial.weights.fm),
+    **weights_only_false_kwargs(DDSP.load_from_checkpoint),
   ).to(device)
   ddsp.eval()
   return ddsp
@@ -399,7 +400,7 @@ def _train_discrete(cfg: DictConfig, control_space, synth_configs, in_memory: bo
     enable_progress_bar=(os.environ.get('PRIOR_NO_PBAR', '0') != '1'),
   )
 
-  trainer.fit(model, train_dl, val_dl, ckpt_path=ckpt_path)
+  trainer.fit(model, train_dl, val_dl, ckpt_path=ckpt_path, **weights_only_false_kwargs(trainer.fit))
 
   best_val_acc = ckpt_acc.best_model_score
   best_val_loss = ckpt_loss.best_model_score
@@ -514,7 +515,7 @@ def main(cfg: DictConfig):
     default_root_dir=output_dir,
   )
 
-  trainer.fit(model, dl, ckpt_path=ckpt_path)
+  trainer.fit(model, dl, ckpt_path=ckpt_path, **weights_only_false_kwargs(trainer.fit))
 
 
 if __name__ == "__main__":
