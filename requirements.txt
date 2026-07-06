@@ -8,3 +8,10 @@ nn-tilde
 scipy
 librosa
 lmdb
+hydra-core
+omegaconf
+soundfile
+tqdm
+scikit-learn
+cached_conv
+torchcrepe
