@@ -20,6 +20,10 @@ from ddsp.prior import Prior, PriorDiscrete
 from ddsp.prior.kv_infer import KVCachedPrior
 from ddsp.latent_compressor import LatentCompressor
 
+# Allow torch>=2.6 (weights_only=True) to load the OmegaConf config in checkpoint hparams.
+from ddsp.checkpoint_compat import allow_omegaconf_checkpoints
+allow_omegaconf_checkpoints()
+
 torch.enable_grad(False)
 torch.set_printoptions(threshold=10000)
 

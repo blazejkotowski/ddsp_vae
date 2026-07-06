@@ -6,6 +6,10 @@ import torch
 torch.set_default_dtype(torch.float32)
 torch.set_float32_matmul_precision('medium')
 
+# Allow torch>=2.6 (weights_only=True) to load the OmegaConf config in checkpoint hparams on resume.
+from ddsp.checkpoint_compat import allow_omegaconf_checkpoints
+allow_omegaconf_checkpoints()
+
 import os
 import shutil
 

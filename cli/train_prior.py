@@ -9,6 +9,10 @@ from lightning.pytorch.loggers import TensorBoardLogger
 import hydra
 from omegaconf import DictConfig
 
+# Allow torch>=2.6 (weights_only=True) to load the OmegaConf config in checkpoint hparams on resume.
+from ddsp.checkpoint_compat import allow_omegaconf_checkpoints
+allow_omegaconf_checkpoints()
+
 from ddsp import DDSP
 from ddsp.audio_feature_dataset import AudioFeatureDataset
 from ddsp.prior.prior import Prior
