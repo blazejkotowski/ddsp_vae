@@ -1,6 +1,8 @@
 numpy
-torch
-torchaudio
+# torch 2.6 flipped torch.load's default to weights_only=True, which can't unpickle the OmegaConf
+# config Lightning stores in our checkpoints (breaks resume/export). Stay on <2.6 to keep the old default.
+torch<2.6
+torchaudio<2.6
 tensorboard
 auraloss
 lightning
