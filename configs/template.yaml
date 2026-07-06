@@ -9,8 +9,9 @@
 #   3. python -m cli.export       --config <name>      -> models/<name>.ts for Max/MSP (nn~)
 #
 # Copy this file to configs/<name>.yaml, set `experiment.name` + `data.dataset_path`, adjust as noted.
-# Everything UNCOMMENTED below is a complete, minimal working config (a realtime rhythmic-style
-# recipe). Everything COMMENTED-OUT is optional — uncomment to enable (each has a note).
+# Everything UNCOMMENTED below is a complete, ready-to-train config (a realtime style + LFO recipe:
+# β-VAE latents, learned style encoder, k-means territories, cond-envelope prior). Everything
+# COMMENTED-OUT is optional — uncomment to enable (each has a note).
 # See DISCRETE_PRIOR.md for the architecture and the full nn~ control layout.
 #
 # Overriding on the CLI (Hydra): `++section.key=value` overrides an existing key, `+section.key=value`
@@ -28,14 +29,14 @@ audio:
   n_channels: 2                  # 1 = mono, 2 = stereo
 
 data:
-  dataset_path: /path/to/your/dataset/processed-stereo   # dir of .wav files (globbed **/*.wav)
+  dataset_path: /path/to/your/audio   # dir of .wav files (globbed **/*.wav)
 
-  # OPTIONAL — waveform augmentations applied during SYNTH training (registry-driven).
-  # Uncomment to enable. Types: RandomMute, RandomGain, RandomCompress, RandomPitch, RandomCrop.
-  # augmentations:
-  #   - type: RandomMute
-  #     params:
-  #       prob: 0.1              # randomly silence a fraction of frames (robustness)
+  # Waveform augmentations applied during SYNTH training (registry-driven).
+  # Types: RandomMute, RandomGain, RandomCompress, RandomPitch, RandomCrop.
+  augmentations:
+    - type: RandomMute
+      params:
+        prob: 0.1                # randomly silence a fraction of frames (robustness)
 
   # TIP: per-track loudness-normalise a multi-style dataset (e.g. RMS ~0.1) before training, or the
   #      loudest tracks dominate the MRSTFT loss and quiet styles reconstruct poorly.
@@ -75,12 +76,12 @@ model:
   plateau_patience: 15000        # LR plateau scheduler patience (steps)
   capacity: 24                   # VAE bottleneck capacity (latent expressivity)
 
-  # OPTIONAL — β-VAE KLD warmup (regularises the latent space). Omit the whole block to disable
-  # (β stays 0). Uncomment to gently anneal β from 0 to `target` between the two epochs.
-  # beta:
-  #   target: 0.001                #   final β
-  #   start_epoch: 30              #   hold β=0 until here
-  #   end_epoch: 50                #   linearly ramp to target by here
+  # β-VAE KLD warmup (regularises the latent space). Gently anneals β from 0 to `target` between
+  # the two epochs. Remove the whole block to disable (β stays 0).
+  beta:
+    target: 0.001                #   final β
+    start_epoch: 30              #   hold β=0 until here
+    end_epoch: 50                #   linearly ramp to target by here
 
 losses:                          # SYNTH reconstruction loss (registry-driven; MRSTFT is the default)
   - type: MRSTFT
@@ -126,9 +127,10 @@ prior:
                                  #   (pad zones become distinct). Uses the per-track territory labels.
 
     # ── TERRITORY conditioning (a second, discrete steering: the territory XY pad + territory-CFG) ──
-    num_territories: 12          # per-window labels; set to your number of source tracks (0 = off)
-    terr_by_track: true          # label = source track (else k-means clusters over control descriptors)
-    terr_rich: true              # rich descriptor for k-means (ignored when terr_by_track=true)
+    num_territories: 4           # number of steerable zones (k-means over control descriptors); 0 = off
+    terr_by_track: false         # false = k-means clusters (territories are DECOUPLED from track count);
+                                 #   true = one territory per source track (needs many tracks)
+    terr_rich: true              # rich descriptor for the k-means clustering
     terr_map_temp: 0.5           # territory-map blend sharpness for the exported XY pad
     cfg_dropout: 0.15            # train a null-territory row => territory classifier-free guidance.
                                  #   (Style-CFG uses style_dropout instead.) Keep >0 to allow CFG.
@@ -138,20 +140,20 @@ prior:
                                  #   0 preserves loudness dynamics; >0 makes style stronger but COMPRESSES
                                  #   loudness dynamics. Leave 0 unless style won't steer.
     ss_prob: 0.3                 # scheduled sampling: train on the model's OWN sampled context
-    # ss_iters: 3                # (optional) >1 = iterate the re-sampling so the context carries realistic
-    #                            #   multi-step drift (stops free-run dynamics from flattening). Default 1.
-    # ss_anneal_steps: 4000      # (optional) ramp ss_prob 0 -> target over this many steps (warmup). Default 0.
-    # ss_temperature: 1.0        # (optional) sampling temperature used when drawing those context tokens.
+    ss_iters: 3                  # >1 = iterate the re-sampling so the context carries realistic
+                                 #   multi-step drift (stops free-run dynamics from flattening)
+    ss_anneal_steps: 4000        # ramp ss_prob 0 -> target over this many steps (warmup)
+    ss_temperature: 1.0          # sampling temperature used when drawing those context tokens
 
     joint_codebooks: true        # depth head: sample the 4 codebooks jointly (on-manifold; kills the
                                  #   codebook-independence clicks). Keep true.
     decode_lookahead: 2          # streaming-decode lookahead (tokens of latency in nn~)
 
-    # ── LFO / cond envelope (optional slow scaffold the prior can follow; drives "LFO 1..4" in nn~) ──
-    # cond_envelope: true        # add the low-passed control envelope as conditioning
-    # cond_smooth_frames: 64     # envelope low-pass window (control frames)
-    # cond_dropout: 0.5          # zero the envelope for this fraction of windows -> the model also learns
-    #                            #   FREEFORM (cond=0); feed 0 to the LFO inputs at play time.
+    # ── LFO / cond envelope (slow scaffold the prior can follow; drives "LFO 1..4" in nn~) ──
+    cond_envelope: true          # add the low-passed control envelope as conditioning
+    cond_smooth_frames: 64       # envelope low-pass window (control frames)
+    cond_dropout: 0.5            # zero the envelope for this fraction of windows -> the model also learns
+                                 #   FREEFORM (cond=0); feed 0 to the LFO inputs at play time.
 
   model:                         # the prior Transformer
     embedding_dim: 64            # d_model = embedding_dim × num_codebooks (64×4 = 256)
