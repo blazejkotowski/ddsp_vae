@@ -574,7 +574,7 @@ class LatentCompressor(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=10, verbose=True
+            optimizer, mode='min', factor=0.5, patience=10
         )
         return {
             'optimizer': optimizer,
