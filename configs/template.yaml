@@ -211,3 +211,34 @@ compressor:
   max_epochs: 250
   learning_rate: 1e-4
   num_workers: 0
+
+# ── POST-NET (optional) ───────────────────────────────────────────────────────────────────────
+# Faithful streaming enhancer applied AFTER the synth, exposed live as the `postnet_mix` knob (sharper
+# transients, corrected spectral envelope). OPTIONAL and off by default. Train it as its own stage —
+# `python -m cli.train_postnet -cn <name> ++postnet.enabled=true` — after the synth is trained; it
+# writes to training/postnet/<name>/ and cli.export picks it up automatically. `cond_dim` is derived
+# from the model (feature_dim + latent_size), so it is intentionally not set here.
+postnet:
+  enabled: false
+  model:
+    ch: 128                        # stage-1 conv width
+    layers: 10                     # stage-1 dilated blocks
+    ch2: 96                        # stage-2 (fine) conv width
+    layers2: 8                     # stage-2 dilated blocks
+    max_gain_db: 15.0              # per-bin gain bound; TIGHTER = leans harder on the rough (bends
+                                   #   transmit better) at a small reconstruction cost
+    phase_cap: 1.57                # per-bin phase-nudge cap (radians, ~π/2)
+    la_f: 3                        # look-ahead frames (quality vs latency)
+  data:
+    chunk_s: 1.0                   # training window length (s)
+    hop_s: 0.25                    # dense-window hop (s) — smaller = more (overlapping) training data
+  training:
+    max_steps: 18000               # real stop (POSTNET_MAX_STEPS env overrides)
+    batch_size: 16
+    lr: 3.0e-4
+    bend_aug_p: 0.4                # prob. of applying a shared spectral bend to rough+target (teaches
+                                   #   bend preservation)
+    gain_slew_w: 0.5               # penalty on frame-to-frame gain jumps (click-free gains)
+    ema: 0.999                     # EMA decay for the saved weights (0 disables)
+    val_fraction: 0.1              # tail of the timeline held out for val_mrstft
+    force_restart: false

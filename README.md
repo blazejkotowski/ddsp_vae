@@ -68,6 +68,11 @@ Trains the DDSP-VAE synth (analysis encoder + control decoder + synth blocks). A
 `training/synth/<name>/`. Optional adversarial fine-tuning is epoch-gated via the `adversarial`
 section.
 
+> **No local GPU?** A ready-to-run training notebook ships in
+> **[`notebooks/Training.ipynb`](notebooks/Training.ipynb)** and runs on **Google Colab** (or any
+> Jupyter/GPU host) — mount your dataset, pick a config, and it drives the same `cli.train` pipeline.
+> (`notebooks/Train_PLAUD_Colab.ipynb` is a Colab-specific variant.)
+
 ### 2) Train the codec + prior
 
 ```zsh
@@ -94,6 +99,35 @@ PRIOR_MAX_STEPS=50000 python -m cli.train_prior -cn <name> \
 To force rebuilding the cache, delete the `prior_cache_*.lmdb` directory (or change cache-relevant
 settings like `prior.model.max_len`, `prior.dataset.stride_factor`, or the codec strides).
 
+### 2b) (Optional) Train the faithful post-net
+
+The **post-net** is a small streaming neural enhancer applied *after* the synth (sharper transients,
+corrected spectral envelope), exposed live as the `postnet_mix` knob. It is optional — skip this and
+the model exports fine without one. It's a **third training stage** that reads the same config and is
+trained *after* the synth, on the synth's frozen output:
+
+```zsh
+python -m cli.train_postnet -cn <name> \
+  data.dataset_path=/absolute/path/to/dataset \
+  ++experiment.name=my_run ++postnet.enabled=true
+```
+
+On first run it builds a paired `(rough, real, control)` cache from the frozen synth (dense overlapping
+windows, cached next to the dataset as `postnet_cache_<name>_<key>/`), then trains the streaming
+transform with an MRSTFT + L1 loss, **bend augmentation** (the same spectral bend applied to both rough
+and target, teaching the transform to preserve bends), a gain-slew penalty for click-free gains, and
+EMA. Artifacts land under `training/postnet/<name>/` (`best.ckpt` monitors held-out `val_mrstft`).
+`cli.export` picks the post-net up automatically (see below).
+
+Enable it once in your config (`postnet.enabled: true`) instead of passing the override each time. The
+recipe knobs live in the `postnet` block of **[`configs/template.yaml`](configs/template.yaml)**:
+`model.max_gain_db` bounds the per-bin gain (tighter → leans harder on the rough, so bends transmit
+better at a small accuracy cost), `training.bend_aug_p` is the bend-preservation dial, and
+`training.ema` the weight-averaging decay. `POSTNET_MAX_STEPS` overrides the step cap. Expect
+~0.62–0.66 MRSTFT vs ~0.85 raw synth at the standard 4-channel budget. Full design
+in **[docs/PostNet_Architecture.md](docs/PostNet_Architecture.md)**. (A research playground with
+alternative architectures also lives in `experiments/postnet/`, but the CLI above is the canonical path.)
+
 ### 3) Export for `nn~`
 
 ```zsh
@@ -102,14 +136,19 @@ python -m cli.export --config <name>
 
 # Choose the checkpoint and target rate:
 python -m cli.export --config <name> --type last --target_fs 48000
+
+# A post-net trained via cli.train_postnet is picked up automatically (adds the runtime
+# `postnet_mix` attribute). Use --no_postnet to skip it, or --postnet <path> to point elsewhere.
+python -m cli.export --config <name> --no_postnet
 ```
 
 `--config <name>` resolves everything from the config: the synth dir, the prior dir, the compressor
 checkpoint, the prior kind (from `prior.discrete.enabled`), and the output path
 (`models/<name>.ts`). For a discrete prior the exporter also **auto-builds the style XY-pad map** from
-the per-track style centroids. Flags: `--type {best,last}`, `--target_fs`, `--streaming`,
-`--prior_checkpoint`, `--compressor_checkpoint`. (The lower-level `--model_directory` /
-`--prior_directory` / `--output_path` flags are available for manual exports.)
+the per-track style centroids. Flags: `--type {best,last}`, `--target_fs`, `--streaming`, `--postnet`
+(explicit post-net checkpoint; otherwise auto-resolved from `training/postnet/<name>/`), `--no_postnet`
+(skip the post-net), `--prior_checkpoint`, `--compressor_checkpoint`. (The lower-level
+`--model_directory` / `--prior_directory` / `--output_path` flags are available for manual exports.)
 
 For an ONNX export, pass an `--output_path` ending in `.onnx`.
 
@@ -249,4 +288,17 @@ python -m pytest -q
 
 PLAUD exports are compatible with the `nn~` external for Max/MSP and PureData. Install it from the
 [nn~ repository](https://github.com/acids-ircam/nn_tilde) and load the exported `.ts` model.
+
+> **Pin `nn~` to version 1.5.6.** Newer releases are known to run the model noticeably slower and can
+> break realtime performance — use 1.5.6, not the latest.
+
+### Ready-made Max for Live device
+
+A finished **Max for Live device** (`PLAUD DEV.amxd`) — full performance UI, XY pads, LFO/CFG/temperature
+controls, latent looper, and terrain visualizer — ships in **[`max/PLAUD DEV.zip`](max/PLAUD%20DEV.zip)**.
+Unzip it and drop `PLAUD DEV.amxd` onto a track in Ableton Live (it bundles the `.maxpat` patchers and
+the JS renderers it needs); point its `nn~` object at your exported `models/<name>.ts`.
+
+The JS renderers are also checked in unpacked under `max/` for editing: `max/terrain.js` (the style-pad
+terrain heatmap `jsui`) and `max/bending_visual.js` (the spectral-bend/limiting visualizer).
 ```

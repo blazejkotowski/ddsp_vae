@@ -989,8 +989,11 @@ if __name__ == '__main__':
   parser.add_argument('--terrain_avg_seeds', type=int, default=1,
                       help='Average terrain features over this many seeds per grid cell (denoise). Multiplies cost.')
   parser.add_argument('--postnet', type=str, default=None,
-                      help='Faithful post-net checkpoint (StreamFX). Adds a runtime postnet_mix attribute '
-                           '(0 = raw synth, 1 = fully transformed).')
+                      help='Faithful post-net checkpoint. Adds a runtime postnet_mix attribute '
+                           '(0 = raw synth, 1 = fully transformed). With --config, auto-resolved from '
+                           'training/postnet/<name>/ when present; pass a path to override.')
+  parser.add_argument('--no_postnet', dest='no_postnet', action='store_true', default=False,
+                      help='Do not attach a post-net even if one exists under --config.')
   config = parser.parse_args()
 
   # Derive any unset options from the experiment config (explicit args win).
@@ -1017,6 +1020,14 @@ if __name__ == '__main__':
       config.target_fs = float((_cfg.get('audio', {}) or {}).get('fs', 44100))
     if config.output_path is None:
       config.output_path = os.path.join('models', f'{name}.ts')
+    # Auto-resolve a trained post-net from training/postnet/<name>/ (best -> last) unless overridden.
+    if config.postnet is None and not config.no_postnet:
+      _pn_dir = os.path.join(tdir, 'postnet', name)
+      _pn_ckpt = (find_checkpoint(_pn_dir, typ='best', return_none=True)
+                  or find_checkpoint(_pn_dir, typ='last', return_none=True))
+      if _pn_ckpt is not None:
+        config.postnet = _pn_ckpt
+        print(f"[config={config.config}] post-net: {config.postnet}")
     print(f"[config={config.config}] kind={config.prior_kind} model_dir={config.model_directory} "
           f"prior_dir={config.prior_directory} compressor={config.compressor_checkpoint} "
           f"target_fs={config.target_fs} out={config.output_path}")
@@ -1144,8 +1155,15 @@ if __name__ == '__main__':
     if getattr(config, 'postnet', None):
       from cli.streaming_postnet import StreamingSpecTransform
       _pck = torch.load(config.postnet, map_location='cpu', weights_only=False)
-      _sd = {k[4:]: v for k, v in _pck['state'].items() if k.startswith('mod.')}  # unwrap StreamFX
-      _c = _pck['cfg']
+      # Two producers: cli.train_postnet (Lightning .ckpt: state_dict + hyper_parameters) and the
+      # research lab (dict: {'cfg', 'state'}). Both wrap the module as `mod.*`.
+      if 'state_dict' in _pck:
+        _raw = _pck['state_dict']
+        _c = dict(_pck.get('hyper_parameters', {}) or {})
+      else:
+        _raw = _pck['state']
+        _c = dict(_pck.get('cfg', {}) or {})
+      _sd = {k[4:]: v for k, v in _raw.items() if k.startswith('mod.')}  # unwrap PostNet/StreamFX
       stage2 = StreamingSpecTransform(_sd, cond_dim=int(_c.get('cond_dim', 4)),
                                       ch=int(_c.get('ch', 96)), layers=int(_c.get('layers', 8)),
                                       ch2=int(_c.get('ch2', 64)), layers2=int(_c.get('layers2', 6)),

@@ -78,27 +78,54 @@ attribute is an unrelated, unused enhancer — leave it at `0`.)
 
 ## Training
 
-The post-net is trained after the synth, on the synth's frozen output:
+The post-net is a first-class training stage (`cli.train_postnet`) that reads the same config as
+`cli.train` / `cli.train_prior`. It trains after the synth, on the synth's frozen output:
+
+```zsh
+python -m cli.train_postnet -cn <name> \
+  data.dataset_path=/abs/path ++experiment.name=my_run ++postnet.enabled=true
+```
+
+Under the hood:
 
 1. Train the DDSP synth (`cli.train`).
-2. Build a paired `(rough, real, control)` cache of dense overlapping windows
-   (`experiments/postnet/common.py :: build_cache_cond_dense`) — rough from the frozen synth, real
-   the target audio, control the trajectory the synth was driven by.
-3. Train the post-net (`experiments/postnet/lab.py`, `arch: streamfx`) with an MRSTFT + L1 loss,
-   **bend augmentation** (the same bend applied to both rough and target, teaching the transform to
-   preserve bends), a gain-slew penalty for smooth gains, and EMA averaging. The lab trains the
-   exact streaming computation, so training and deployment match.
-4. Export with the prior (`cli.export --postnet <ckpt>`), which wires the streaming module into
-   `decode()` behind `postnet_mix`.
+2. `cli.train_postnet` loads the frozen synth and builds a paired `(rough, real, control)` cache of
+   dense overlapping windows (`ddsp/postnet/dataset.py :: build_or_load_postnet_cache`) — rough from
+   the frozen synth, real the target audio, control = `[features | latents]` at control rate (the same
+   layout `decode()` feeds the post-net). Cached next to the dataset and reused across runs.
+3. It trains `PostNet` (`ddsp/postnet/postnet.py`), which wraps the exact streaming module
+   (`StreamingSpecTransform`), with an MRSTFT + L1 loss, **bend augmentation** (the same bend applied
+   to both rough and target, teaching the transform to preserve bends), a gain-slew penalty for smooth
+   gains, and EMA (`ddsp/postnet/ema.py`). Training uses the exact streaming computation, so training
+   and deployment match. Checkpoints land in `training/postnet/<name>/`. Recipe knobs live in the
+   `postnet` block of `configs/template.yaml`.
+
+   **Validation reporting** reuses the synth's own loss machinery (`PostNet.attach_synth_metrics`), so
+   the post-net logs MRSTFT in the *same style* as `cli.train`: `val_loss` (the synth's monitored
+   metric) and `val/<LossName>` (its per-component metric) are directly comparable to the synth run.
+   Note the synth's perceptual MRSTFT is **asymmetric** — its `val_loss` calls `loss_fn(target, pred)`
+   while `val/MultiResolutionSTFTLoss` calls `loss_fn(pred, target)` — so the two differ, and an
+   improvement can *raise* the reversed `val_loss` while *lowering* the conventional component. The
+   post-net therefore **checkpoints on the conventional `val_mrstft`** (pred-vs-target), not the
+   reversed `val_loss`.
+4. `cli.export --config <name>` **auto-resolves** the post-net from `training/postnet/<name>/` and
+   wires the streaming module into `decode()` behind `postnet_mix` (`--no_postnet` to skip;
+   `--postnet <ckpt>` to override).
 
 Expected reconstruction at the standard 4-channel / 375 Hz control budget is ~0.62–0.66 MRSTFT,
 down from ~0.85 for the raw synth.
+
+A research playground with alternative architectures (queue-driven) remains in `experiments/postnet/`,
+but `cli.train_postnet` is the canonical, supported path.
 
 ## Files
 
 | File | Role |
 |---|---|
 | `cli/streaming_postnet.py` | `StreamingSpecTransform` — deployed streaming module (cached-context convs, OLA tails, look-ahead FIFOs, loudness cap) |
-| `experiments/postnet/lab.py` | `SpecTransform` / `StreamFX` arch + training loop |
-| `experiments/postnet/common.py` | paired `(rough, real, control)` cache builders |
-| `cli/export.py` | wires the streaming module into `decode()` behind `postnet_mix` |
+| `cli/train_postnet.py` | Hydra training CLI (the canonical path) |
+| `ddsp/postnet/postnet.py` | `PostNet` LightningModule (wraps `StreamingSpecTransform`) + loss/bend-aug |
+| `ddsp/postnet/dataset.py` | paired `(rough, real, control)` cache builder from the frozen synth |
+| `ddsp/postnet/ema.py` | `EMACallback` — EMA of the weights, swapped in for validation/checkpointing |
+| `cli/export.py` | auto-resolves + wires the streaming module into `decode()` behind `postnet_mix` |
+| `experiments/postnet/` | research playground (alternative archs, queue-driven) — not the supported path |
