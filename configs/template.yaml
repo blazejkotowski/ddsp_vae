@@ -160,7 +160,12 @@ prior:
     nhead: 8                     # attention heads (d_model must divide by nhead)
     num_layers: 4
     dim_feedforward: 1024
-    dropout: 0.0
+    dropout: 0.1                 # MUST be >0 when style_dim>0. With dropout 0 the style-conditioned
+                                 #   transformer memorizes each window through its style code `s`
+                                 #   (train_acc ~0.99 but val_acc ~0.1 and val_style_sep_acc ~0 — the
+                                 #   style stops transferring to unseen windows). Any 0.05–0.15 breaks
+                                 #   that memorization: val_acc -> ~0.99 AND the style pad stays intact.
+                                 #   0.0 is only safe for a NON-style prior (style_dim 0).
     max_len: 256                 # context length in TOKENS (≈ max_len / token_rate seconds)
 
   dataset:                       # prior token-window dataset
@@ -177,7 +182,10 @@ prior:
     num_workers: 4
     lr: 5e-4
     force_restart: false
-    val_fraction: 0.0            # held-out fraction (0 = none; val acc is noisy on tiny sets)
+    val_fraction: 0.05           # held-out fraction for a MEANINGFUL averaged val_acc (blocked_random
+                                 #   split with a gap => val windows are genuinely unseen). 0.0 keeps
+                                 #   only 1 noisy window; use a real fraction so val_acc can actually
+                                 #   reveal overfit/memorization (that's how the dropout-0 bug shows up).
     split_strategy: blocked_random
     split_gap: null
     split_seed: 0

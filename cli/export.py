@@ -148,12 +148,13 @@ class ScriptedDDSP(nn_tilde.Module):
     if not isinstance(self.prior_model, FakePrior):
       if isinstance(self.prior_model, PriorDiscreteWrapper):
         # New layout: [LFO control envelope | normalised 2-D territory map | temperature].
-        cd = int(self.prior_model.cond_dim)
         use_terr = bool(self.prior_model.use_terr_map)
         use_style = bool(self.prior_model.use_style)
         use_cfg = bool(self.prior_model.use_cfg)
         in_ch = int(self.prior_model.prior_in_channels)
-        labels = [f'(signal) LFO {i}' for i in range(1, cd + 1)]
+        # LFO inlets are ALWAYS exposed (inert when the model has no cond conditioning) so the
+        # control layout is stable across models. See PriorDiscreteWrapper.lfo_in_dim.
+        labels = [f'(signal) LFO {i}' for i in range(1, int(self.prior_model.lfo_in_dim) + 1)]
         if use_style:
           labels += ['(signal) Style X', '(signal) Style Y']
         elif use_terr:
@@ -489,11 +490,12 @@ def _compute_style_table(prior, cfg):
 class PriorDiscreteWrapper(torch.nn.Module):
   """Realtime nn~ wrapper for the (joint-codebook) discrete prior.
 
-  Control layout in `forward(x)` (x: [B, C, steps], C = cond_dim + 2 + 1 + use_cfg):
-    [0 : cond_dim)          -> LFO control envelope (the slow conditioning scaffold)
-    [cond_dim : cond_dim+2) -> normalised 2-D "territory map" coordinate (blends zones)
-    [cond_dim+2]            -> temperature (sampling randomness)
-    [cond_dim+3]            -> CFG scale (territory contrast/strength; 1=off, >1 amplifies) [if available]
+  Control layout in `forward(x)` (x: [B, C, steps], C = lfo_in_dim + 2 + 1 + use_cfg):
+    [0 : lfo_in_dim)        -> LFO control envelope (ALWAYS exposed; only the first cond_dim are fed
+                               to the model, the rest are inert -> stable layout even when cond_dim=0)
+    [lfo_in_dim : +2)       -> normalised 2-D "territory map" coordinate (blends zones)
+    [lfo_in_dim+2]          -> temperature (sampling randomness)
+    [lfo_in_dim+3]          -> CFG scale (territory contrast/strength; 1=off, >1 amplifies) [if available]
     [..]                    -> Smoothing (one-pole LPF on ALL control trajectories; 0=off..0.95 sluggish)
     [last]                  -> Reseed Trigger (rising edge >0.5 re-anchors the prior to a fresh phrase)
   No transposition, no prediction-strength. Joint (WS4) models sample the N codebooks
@@ -502,7 +504,7 @@ class PriorDiscreteWrapper(torch.nn.Module):
   """
   def __init__(self, prior: PriorDiscrete, compressor: torch.nn.Module, resample_ratio: float = 1.0,
                n_feature_channels: int = 2, terr_map_temp: float = 0.5, decode_lookahead: int = 2,
-               style_table: Optional[torch.Tensor] = None):
+               style_table: Optional[torch.Tensor] = None, lfo_inputs: int = 4):
     super().__init__()
 
     # KV-cached incremental prior (weights mapped from the trained PriorDiscrete).
@@ -524,6 +526,12 @@ class PriorDiscreteWrapper(torch.nn.Module):
     self.is_joint = bool(getattr(prior, '_joint', False))
     self.cond_dim = int(getattr(prior, '_cond_dim', 0))
     self.use_cond = self.cond_dim > 0
+    # Always EXPOSE at least `lfo_inputs` LFO inlets so the nn~ control layout stays STABLE across
+    # models regardless of whether LFO conditioning is active. When cond_dim < lfo_in_dim the extra
+    # inlets are accepted and IGNORED (inert): the model only consumes the first cond_dim of them.
+    # This keeps a fixed [LFO | XY | temp | ...] layout so a Max patch built for an LFO model still
+    # lines up on a model trained with cond_envelope=false (cond_dim=0). See forward().
+    self.lfo_in_dim = max(self.cond_dim, int(lfo_inputs))
     self.num_territories = int(getattr(prior, '_num_territories', 0))
     self.d_model = int(prior._d_model)
     # STYLE on the XY pad: a learned global style code (style_dim) blended from per-track centroids,
@@ -543,7 +551,7 @@ class PriorDiscreteWrapper(torch.nn.Module):
     # nn~ inputs: [LFO(cond_dim) | (Style|Territory)X,Y | Temperature | (CFG) | Smoothing | Reseed].
     self.use_feat_smooth = int(n_feature_channels) > 0
     self.use_reseed = True  # beat-synced phrase re-anchor (rising-edge trigger)
-    self.prior_in_channels = ((self.cond_dim if self.use_cond else 0)
+    self.prior_in_channels = (self.lfo_in_dim
                               + (2 if self.use_map else 0) + 1 + (1 if self.use_cfg else 0)
                               + (1 if self.use_feat_smooth else 0) + (1 if self.use_reseed else 0))
     self.terr_map_temp = float(terr_map_temp)  # blend sharpness of the 2-D map
@@ -736,12 +744,15 @@ class PriorDiscreteWrapper(torch.nn.Module):
       return torch.zeros(1, self.num_controls, 0)
 
     cd = self.cond_dim
-    # Parse the control layout: [LFO(cond_dim) | TerritoryX,Y | Temperature | (CFG)].
+    # Parse the control layout: [LFO(lfo_in_dim) | (Style|Territory)X,Y | Temperature | (CFG) | ...].
+    # The LFO block is ALWAYS lfo_in_dim wide; the model consumes only its first cond_dim channels
+    # (the rest are inert). Downstream controls therefore always start at `base = lfo_in_dim`, so the
+    # layout is identical whether or not LFO conditioning is enabled.
     if self.use_cond:
       cond_in = x[:1, :cd, :].permute(0, 2, 1).contiguous()  # [1, steps, cond_dim]
     else:
       cond_in = torch.zeros(1, steps, 1)
-    base = cd if self.use_cond else 0
+    base = self.lfo_in_dim
     if self.use_map:
       terr_xy_in = x[:1, base:base + 2, :]   # [1, 2, steps]  (Style XY for style models)
       temp_in = x[:1, base + 2, :]           # [1, steps]
@@ -954,7 +965,8 @@ def load_discrete_wrapper(config, cfg, device='cpu'):
                                  n_feature_channels=feature_dim,
                                  terr_map_temp=float(disc.get('terr_map_temp', 0.5)),
                                  decode_lookahead=int(disc.get('decode_lookahead', 2)),
-                                 style_table=style_table)
+                                 style_table=style_table,
+                                 lfo_inputs=int(disc.get('lfo_inputs', 4)))
 
   prior_discrete = prior_discrete.to(device); compressor = compressor.to(device)
   ddsp = ddsp.to(device); wrapper = wrapper.to(device)
@@ -1129,7 +1141,8 @@ if __name__ == '__main__':
                                  n_feature_channels=feature_dim,
                                  terr_map_temp=float(_disc.get('terr_map_temp', 0.5)),
                                  decode_lookahead=int(_disc.get('decode_lookahead', 2)),
-                                 style_table=style_table)
+                                 style_table=style_table,
+                                 lfo_inputs=int(_disc.get('lfo_inputs', 4)))
 
   if format == 'onnx':
     ddsp.eval()
